@@ -13,6 +13,14 @@
 ## 界面预览
 
 <p align="center">
+  <img src="docs/assets/screenshots/backend-architecture.png" alt="后端架构图" width="960">
+</p>
+
+<p align="center">
+  <strong>后端架构与数据流</strong>
+</p>
+
+<p align="center">
   <img src="docs/assets/screenshots/analyzer-page.png" alt="雀魂牌谱一键分析入口" width="760">
 </p>
 
