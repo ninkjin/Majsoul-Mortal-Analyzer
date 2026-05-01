@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>雀魂牌谱抓取工具</title>
+  <style>
+    :root {
+      --bg: #172126;
+      --panel: #f7f4e8;
+      --panel-2: #ebe4cf;
+      --ink: #182127;
+      --muted: #687276;
+      --line: #d7ceb5;
+      --green: #246f58;
+      --blue: #286b9f;
+      --red: #b44942;
+      --gold: #b8792b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 20% 15%, rgba(54, 135, 112, .28), transparent 34%),
+        linear-gradient(145deg, #102028, var(--bg));
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(880px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 18px 48px rgba(0,0,0,.28);
+      overflow: hidden;
+    }
+
+    header {
+      padding: 18px 20px;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .content {
+      padding: 18px 20px 20px;
+      display: grid;
+      gap: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--ink);
+      background: #fffdf7;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      outline: none;
+    }
+
+    textarea:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(40, 107, 159, .16);
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button, a.button {
+      height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      padding: 0 13px;
+      color: #fff;
+      background: var(--green);
+      font: inherit;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button.secondary, a.button.secondary {
+      color: var(--ink);
+      background: #fffdf7;
+      border-color: var(--line);
+    }
+
+    button:disabled, a.button.disabled {
+      opacity: .48;
+      pointer-events: none;
+      cursor: default;
+    }
+
+    .status {
+      min-height: 42px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fffdf7;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .status.ok {
+      border-color: rgba(36, 111, 88, .45);
+      background: #eef7f1;
+    }
+
+    .status.error {
+      border-color: rgba(180, 73, 66, .5);
+      background: #fff0ee;
+      color: var(--red);
+      font-weight: 700;
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric {
+      min-height: 62px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fffdf7;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 16px;
+    }
+
+    pre {
+      max-height: 280px;
+      overflow: auto;
+      margin: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fffdf7;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 680px) {
+      body { padding: 12px; }
+      .meta { grid-template-columns: 1fr; }
+      .row { align-items: stretch; }
+      button, a.button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>雀魂牌谱抓取工具</h1>
+      <div class="subtitle">粘贴雀魂分享链接，前端直接提取 paipu 并请求官方免登牌谱接口。</div>
+    </header>
+
+    <section class="content">
+      <label>
+        雀魂分享链接
+        <textarea id="input" spellcheck="false" placeholder="例如：https://game.maj-soul.com/1/?paipu=260219-xxxx_xxxx"></textarea>
+      </label>
+
+      <div class="row">
+        <button id="fetchBtn">抓取牌谱</button>
+        <button class="secondary" id="pasteBtn">从剪贴板粘贴</button>
+        <button class="secondary" id="clearBtn">清空</button>
+        <a class="button secondary disabled" id="downloadBtn" href="#" download="majsoul-paipu.json">下载原始 JSON</a>
+        <a class="button secondary" href="mortal-output-viewer.html" target="_blank" rel="noopener">打开现有复盘页</a>
+      </div>
+
+      <div class="status" id="status">等待输入雀魂牌谱链接。</div>
+
+      <div class="meta">
+        <div class="metric">
+          <span>paipu</span>
+          <strong id="paipuText">-</strong>
+        </div>
+        <div class="metric">
+          <span>接口状态</span>
+          <strong id="apiText">-</strong>
+        </div>
+        <div class="metric">
+          <span>数据大小</span>
+          <strong id="sizeText">-</strong>
+        </div>
+      </div>
+
+      <pre id="preview">抓取成功后，这里会显示返回 JSON 的前几千个字符。</pre>
+
+      <div class="note">
+        说明：这个文件只做纯前端免登抓取，不会修改项目文件。当前 Mortal 复盘页仍然需要
+        <code>log.json</code>、<code>mortal-output-p2-mapped.jsonl</code> 和原始天凤格式 JSON。
+        浏览器网页无法静默写入这些本地文件，也不能在前端运行 Mortal 模型，所以完整自动分析仍需要你现有的本地转换流程。
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // 雀魂公开免登牌谱接口。这里严格按用户要求固定使用这个 endpoint。
+    const API_BASE = 'https://game.maj-soul.com/1/api/account/record_replay?paipu=';
+
+    // 页面元素引用集中放在一起，后面二次修改 UI 时比较好找。
+    const input = document.getElementById('input');
+    const fetchBtn = document.getElementById('fetchBtn');
+    const pasteBtn = document.getElementById('pasteBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const statusBox = document.getElementById('status');
+    const preview = document.getElementById('preview');
+    const paipuText = document.getElementById('paipuText');
+    const apiText = document.getElementById('apiText');
+    const sizeText = document.getElementById('sizeText');
+
+    let lastBlobUrl = null;
+
+    function setStatus(message, type = '') {
+      statusBox.className = `status ${type}`.trim();
+      statusBox.textContent = message;
+    }
+
+    function resetDownload() {
+      if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+      lastBlobUrl = null;
+      downloadBtn.href = '#';
+      downloadBtn.classList.add('disabled');
+    }
+
+    // 从完整分享链接里提取 paipu 参数。
+    // 支持：
+    //   https://game.maj-soul.com/1/?paipu=xxx
+    //   https://game.maj-soul.com/1/?foo=1&paipu=xxx&bar=2
+    //   直接粘贴 paipu=xxx
+    function extractPaipu(value) {
+      const text = String(value || '').trim();
+      const match = text.match(/[?&]paipu=([^&#\s]+)/) || text.match(/^paipu=([^&#\s]+)/);
+      if (!match) return null;
+      try {
+        return decodeURIComponent(match[1]);
+      } catch {
+        return match[1];
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+    }
+
+    function looksLikeErrorPayload(data) {
+      if (!data || typeof data !== 'object') return false;
+      const code = data.error ?? data.err ?? data.code ?? data.error_code;
+      if (code === undefined || code === null) return false;
+      return code !== 0 && code !== '0' && code !== 'ok';
+    }
+
+    function makeDownload(paipu, text) {
+      resetDownload();
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+      lastBlobUrl = URL.createObjectURL(blob);
+      downloadBtn.href = lastBlobUrl;
+      downloadBtn.download = `${paipu.replace(/[^\w.-]+/g, '_')}.json`;
+      downloadBtn.classList.remove('disabled');
+    }
+
+    async function fetchPaipu() {
+      resetDownload();
+      preview.textContent = '请求中...';
+      apiText.textContent = '-';
+      sizeText.textContent = '-';
+
+      const paipu = extractPaipu(input.value);
+      paipuText.textContent = paipu || '-';
+      if (!paipu) {
+        preview.textContent = '无有效数据。';
+        setStatus('无效链接：没有找到 paipu 参数。请粘贴完整雀魂分享链接。', 'error');
+        return;
+      }
+
+      const url = `${API_BASE}${encodeURIComponent(paipu)}`;
+      setStatus('正在请求雀魂公开牌谱接口...');
+      fetchBtn.disabled = true;
+
+      try {
+        // 纯前端跨域请求能否成功，取决于雀魂接口是否返回 Access-Control-Allow-Origin。
+        // 如果官方接口允许 CORS，浏览器就会把 JSON 返回给 JS；如果不允许，浏览器会直接抛 TypeError。
+        const response = await fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          cache: 'no-store',
+        });
+
+        apiText.textContent = `${response.status} ${response.statusText || ''}`.trim();
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error('请求失败：HTTP 404。这个 record_replay 接口路径当前不可用或已失效，不是你的 paipu 链接提取错误。');
+          }
+          throw new Error(`请求失败：HTTP ${response.status}`);
+        }
+
+        const rawText = await response.text();
+        sizeText.textContent = formatBytes(new Blob([rawText]).size);
+
+        let data;
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          throw new Error('接口返回的不是合法 JSON。');
+        }
+
+        if (looksLikeErrorPayload(data)) {
+          throw new Error(`接口返回错误：${JSON.stringify(data).slice(0, 300)}`);
+        }
+
+        const pretty = JSON.stringify(data, null, 2);
+        preview.textContent = pretty.slice(0, 8000);
+        makeDownload(paipu, pretty);
+
+        // 暂存一份到 localStorage，方便你后续如果要扩展现有 viewer 从 localStorage 读数据。
+        localStorage.setItem('majsoul:lastPaipu', paipu);
+        localStorage.setItem('majsoul:lastRecordReplay', pretty);
+
+        setStatus('抓取成功。已生成可下载的原始 JSON，并暂存到浏览器 localStorage。', 'ok');
+      } catch (error) {
+        apiText.textContent = '失败';
+        preview.textContent = '无有效数据。';
+        const corsHint = error instanceof TypeError
+          ? '浏览器可能拦截了跨域请求，或当前网络无法访问雀魂接口。'
+          : '';
+        setStatus(`${error.message}${corsHint ? ` ${corsHint}` : ''}`, 'error');
+      } finally {
+        fetchBtn.disabled = false;
+      }
+    }
+
+    fetchBtn.addEventListener('click', fetchPaipu);
+
+    input.addEventListener('input', () => {
+      const paipu = extractPaipu(input.value);
+      paipuText.textContent = paipu || '-';
+    });
+
+    pasteBtn.addEventListener('click', async () => {
+      try {
+        input.value = await navigator.clipboard.readText();
+        input.dispatchEvent(new Event('input'));
+        setStatus('已从剪贴板粘贴。');
+      } catch {
+        setStatus('无法读取剪贴板。请手动粘贴链接。', 'error');
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      input.value = '';
+      paipuText.textContent = '-';
+      apiText.textContent = '-';
+      sizeText.textContent = '-';
+      preview.textContent = '抓取成功后，这里会显示返回 JSON 的前几千个字符。';
+      resetDownload();
+      setStatus('等待输入雀魂牌谱链接。');
+    });
+
+    // 如果 URL 自己带了 ?paipu=xxx，也自动填入输入框，方便以后做书签。
+    const initialPaipu = extractPaipu(location.search);
+    if (initialPaipu) {
+      input.value = `paipu=${initialPaipu}`;
+      paipuText.textContent = initialPaipu;
+    }
+  </script>
+</body>
+</html>

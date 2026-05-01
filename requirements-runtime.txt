@@ -1,0 +1,8 @@
+numpy
+toml
+torch
+tqdm
+tensorboard
+maturin
+mahjong
+tensoul

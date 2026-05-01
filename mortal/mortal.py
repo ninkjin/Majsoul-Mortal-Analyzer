@@ -34,9 +34,11 @@ def main():
     conv_channels = cfg['resnet']['conv_channels']
     if 'tag' in state:
         tag = state['tag']
-    else:
+    elif 'timestamp' in state:
         time = datetime.fromtimestamp(state['timestamp'], tz=timezone.utc).strftime('%y%m%d%H')
         tag = f'mortal{version}-b{num_blocks}c{conv_channels}-t{time}'
+    else:
+        tag = f'mortal{version}-b{num_blocks}c{conv_channels}'
 
     mortal = Brain(version=version, num_blocks=num_blocks, conv_channels=conv_channels).eval()
     dqn = DQN(version=version).eval()

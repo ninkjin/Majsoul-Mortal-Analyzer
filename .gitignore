@@ -1,4 +1,6 @@
 .vscode
+.claude
+.tools
 __pycache__
 
 /target
@@ -7,8 +9,23 @@ __pycache__
 *.exe
 *.so
 *.pth
+!/mj_model/mortal.pth
+!/mj_model/.gitkeep
 
 .ipynb_checkpoints
 *.ipynb
 
 /_draft
+/runtime
+/.runtime
+/dist
+/tmp
+/tmp-paipu-server.out
+/tmp-paipu-server.err
+/viewer-data/*
+!/viewer-data/.gitkeep
+/log.json
+/mortal-output-p2.jsonl
+/mortal-output-p2-mapped.jsonl
+/majsoul-tenhou-current.json
+/mortal-viewer-config.json
