@@ -10,6 +10,24 @@
 - 自动生成复盘数据并打开本地复盘页面。
 - 在复盘页里查看实际切牌、Mortal 推荐、P 值、差异标记和每局结算。
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/assets/screenshots/analyzer-page.png" alt="雀魂牌谱一键分析入口" width="760">
+</p>
+
+<p align="center">
+  <strong>牌谱输入与分析入口</strong>
+</p>
+
+<p align="center">
+  <img src="docs/assets/screenshots/viewer-page.png" alt="Mortal 牌谱复盘页面" width="960">
+</p>
+
+<p align="center">
+  <strong>Mortal 复盘页面</strong>
+</p>
+
 ## 快速开始
 
 Windows 下最简单的启动方式：
