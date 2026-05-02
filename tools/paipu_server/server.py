@@ -620,7 +620,7 @@ ANALYZER_HTML = """<!doctype html>
           </span>
         </label>
       </div>
-      <div class="security-note">maj.gg 免登录不需要账号密码；tensoul 会使用账号密码在本地获取牌谱。两种方式成功后都会写入本地历史。</div>
+      <div class="security-note">maj.gg 免登录不需要账号密码；tensoul 会使用账号密码在本地获取牌谱，这里会挤号，但是不会泄露你的账号密码，因为全部都是在本地进行。两种方式成功后都会写入本地历史。</div>
       <div class="action-grid">
         <label>
           获取方式
