@@ -58,6 +58,21 @@ class PlayerDetectTest(unittest.TestCase):
 
             self.assertEqual(resolve_player_id(source, "auto", "lastkasd"), 2)
 
+    def test_defaults_tenhou_source_to_first_player_with_paipu_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "game.tenhou.json"
+            source.write_text(json.dumps({"name": ["lastkasd", "b", "c", "d"]}), encoding="utf-8")
+
+            self.assertEqual(
+                resolve_player_id(
+                    source,
+                    "auto",
+                    "",
+                    "260213-b409422a-54ad-4699-a9fe-23f9ed4c2390_a48969976",
+                ),
+                0,
+            )
+
     def test_manual_player_id_still_works(self):
         self.assertEqual(resolve_player_id(Path("missing.json"), "3", ""), 3)
 

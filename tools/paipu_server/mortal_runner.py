@@ -39,6 +39,24 @@ def python_has_mortal_deps(python):
     return result.returncode == 0
 
 
+def python_site_packages(python):
+    code = "import sysconfig; print(sysconfig.get_path('purelib'))"
+    try:
+        result = subprocess.run(
+            [str(python), "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=12,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    path = result.stdout.strip()
+    return path or None
+
+
 def model_file(root, name):
     return Path(root) / "mj_model" / name
 
@@ -112,6 +130,14 @@ def run_mortal_mapping(root, mjai_path, mapped_path, player_id, model_path=None)
         env = os.environ.copy()
         env["MORTAL_CFG"] = str(config_path)
         env["MORTAL_MODEL_PATH"] = str(model_path)
+        pythonpath_parts = []
+        site_packages = python_site_packages(local_python)
+        if site_packages:
+            pythonpath_parts.append(site_packages)
+        pythonpath_parts.append(str(root / "mortal"))
+        if env.get("PYTHONPATH"):
+            pythonpath_parts.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         cmd = local_command(root, local_python, player_id)
     else:
         env = None

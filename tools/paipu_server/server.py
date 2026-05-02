@@ -197,6 +197,8 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
         seat = player_seat_by_account_id(source_path, account_id)
         if seat is not None:
             return seat
+        if tenhou_source_has_player_names(source_path):
+            return 0
 
     target = str(player_name or "").strip()
     if not target:
@@ -211,6 +213,12 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
         if lowered in str(name).strip().casefold():
             return seat
     raise ValueError(f"没有在牌谱玩家里找到昵称：{target}")
+
+
+def tenhou_source_has_player_names(source_path):
+    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+    names = data.get("name") or []
+    return len(names) >= 4
 
 
 def player_seat_by_account_id(source_path, account_id):

@@ -74,24 +74,47 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
 
     downloader = MajsoulPaipuDownloader()
 
+    async def fetch_json_with_retry(session, request_url, label, attempts=3):
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                async with session.get(request_url) as res:
+                    res.raise_for_status()
+                    return await res.json()
+            except (asyncio.TimeoutError, OSError, aiohttp.ClientError) as exc:
+                last_error = exc
+                print(
+                    f'{label} failed ({attempt}/{attempts}): '
+                    f'{type(exc).__name__}: {exc}',
+                    file=sys.stderr,
+                    flush=True,
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(attempt)
+        raise RuntimeError(
+            f'连接雀魂服务器超时：{label}。请稍后重试，或检查网络/代理。'
+        ) from last_error
+
     async def connect_with_current_config():
         print('connecting to Mahjong Soul...', file=sys.stderr, flush=True)
-        timeout = aiohttp.ClientTimeout(total=6)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f'{downloader.MS_HOST}/1/version.json') as res:
-                version_res = await res.json()
-                downloader.version = version_res['version']
-                downloader.version_to_force = downloader.version.replace('.w', '')
-                print(f'version: {downloader.version}', file=sys.stderr, flush=True)
+        timeout = aiohttp.ClientTimeout(total=20, connect=10, sock_connect=10, sock_read=10)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            version_res = await fetch_json_with_retry(
+                session,
+                f'{downloader.MS_HOST}/1/version.json',
+                '读取雀魂版本信息',
+            )
+            downloader.version = version_res['version']
+            downloader.version_to_force = downloader.version.replace('.w', '')
+            print(f'version: {downloader.version}', file=sys.stderr, flush=True)
 
             config_url = f'{downloader.MS_HOST}/1/v{downloader.version}/config.json'
-            async with session.get(config_url) as res:
-                config = await res.json()
-                gateway_group = config['ip'][0]
-                if 'region_urls' in gateway_group:
-                    routes = [item['url'] for item in gateway_group['region_urls']]
-                else:
-                    routes = [item['url'] for item in gateway_group['gateways']]
+            config = await fetch_json_with_retry(session, config_url, '读取雀魂网关配置')
+            gateway_group = config['ip'][0]
+            if 'region_urls' in gateway_group:
+                routes = [item['url'] for item in gateway_group['region_urls']]
+            else:
+                routes = [item['url'] for item in gateway_group['gateways']]
 
             last_error = None
             for route_url in routes:
@@ -101,11 +124,15 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
                         f'{route_url}/api/clientgate/routes'
                         f'?platform=Web&version={downloader.version}&lang=chs&randv=1'
                     )
-                    async with session.get(gateway_url) as res:
-                        routes_res = await res.json()
-                        downloader.endpoint = _endpoint_from_clientgate_routes(routes_res)
-                        print(f'endpoint: {downloader.endpoint}', file=sys.stderr, flush=True)
-                        break
+                    routes_res = await fetch_json_with_retry(
+                        session,
+                        gateway_url,
+                        f'读取雀魂网关线路 {route_url}',
+                        attempts=2,
+                    )
+                    downloader.endpoint = _endpoint_from_clientgate_routes(routes_res)
+                    print(f'endpoint: {downloader.endpoint}', file=sys.stderr, flush=True)
+                    break
                 except Exception as exc:
                     last_error = exc
                     print(
@@ -114,11 +141,14 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
                         flush=True,
                     )
             else:
-                raise RuntimeError('Cannot detect Mahjong Soul endpoint') from last_error
+                raise RuntimeError('无法检测雀魂网关线路，请稍后重试或切换 maj.gg 免登录获取。') from last_error
 
         downloader.channel = MSRPCChannel(downloader.endpoint)
         downloader.lobby = Lobby(downloader.channel)
-        await downloader.channel.connect(downloader.MS_HOST)
+        try:
+            await asyncio.wait_for(downloader.channel.connect(downloader.MS_HOST), timeout=30)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError('连接雀魂网关超时，请稍后重试或检查网络/代理。') from exc
 
     downloader._connect = connect_with_current_config
     await asyncio.wait_for(downloader.start(), timeout=90)
