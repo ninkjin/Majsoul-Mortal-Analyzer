@@ -121,6 +121,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
 
 便携包会包含 `runtime`、页面、脚本和 `mj_model` 下的模型文件。
 
+### 环境检查
+
+双击 `检查环境.cmd` 可以自动检测 Python 依赖是否完整（torch、mahjong、tensoul、numpy 等）。如果有缺失会自动安装，全部通过则显示"环境检查通过"。首次使用或遇到启动报错时建议先运行一次。
+
 ## 项目结构
 
 ```text
