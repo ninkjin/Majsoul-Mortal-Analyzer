@@ -594,18 +594,18 @@
       margin-bottom: calc((var(--tile-height) - var(--tile-width)) / 2);
     }
 
-    .tile.called-chi {
-      box-shadow: 0 0 0 3px rgba(45, 139, 214, .95), 0 1px 0 rgba(0,0,0,.24);
+    .tile.called-ai-match {
+      box-shadow: 0 0 0 3px rgba(46, 186, 78, .95), 0 1px 0 rgba(0,0,0,.24);
       z-index: 3;
     }
 
-    .tile.called-pon {
-      box-shadow: 0 0 0 3px rgba(226, 93, 69, .95), 0 1px 0 rgba(0,0,0,.24);
+    .tile.called-ai-mismatch {
+      box-shadow: 0 0 0 3px rgba(226, 69, 69, .95), 0 1px 0 rgba(0,0,0,.24);
       z-index: 3;
     }
 
-    .tile.called-kan {
-      box-shadow: 0 0 0 3px rgba(139, 88, 210, .95), 0 1px 0 rgba(0,0,0,.24);
+    .tile.called-default {
+      box-shadow: 0 0 0 3px rgba(160, 160, 160, .8), 0 1px 0 rgba(0,0,0,.24);
       z-index: 3;
     }
 
@@ -999,6 +999,20 @@
       return action.type;
     }
 
+    function callDecisionTriggerText(choice) {
+      const output = choice.output;
+      if (['pon', 'chi', 'daiminkan', 'none'].includes(output.type)) {
+        const ev = state.events[choice.eventIndex];
+        if (ev?.type === 'dahai' && ev.actor !== PLAYER_ID) {
+          const tile = tileText(ev.pai);
+          if (output.type === 'none') return `是否跳过 ${tile}?`;
+          const actionName = output.type === 'pon' ? '碰' : output.type === 'chi' ? '吃' : '杠';
+          return `是否${actionName} ${tile}?`;
+        }
+      }
+      return eventText(choice.trigger);
+    }
+
     function eventText(event) {
       if (!event) return '-';
       if (event.type === 'tsumo') return `摸 ${tileText(event.pai)}`;
@@ -1020,11 +1034,18 @@
     }
 
     function hasAiMeta(output) {
-      return Array.isArray(output?.meta?.q_values) && output.meta.q_values.length > 0;
+      if (Array.isArray(output?.meta?.q_values) && output.meta.q_values.length > 0) return true;
+      if (['pon', 'chi', 'daiminkan'].includes(output?.type)) return true;
+      return false;
     }
 
     function shouldShowAiChoice(output, eventIndex) {
-      if (!hasAiMeta(output)) return false;
+      if (hasAiMeta(output)) return true;
+      // 也接受吃碰杠的跳过操作（none 类型，事件是其他玩家的 dahai）
+      if (output?.type === 'none') {
+        const event = state.events[eventIndex];
+        if (event?.type === 'dahai' && event.actor !== PLAYER_ID) return true;
+      }
       if (isForcedRiichiTsumogiriChoice(output, eventIndex)) return false;
       if (isForcedRiichiPassChoice(output, eventIndex)) return false;
       return true;
@@ -1104,7 +1125,19 @@
     }
 
     function findActualAfterReaction(reaction, eventIndex) {
-      if (!reaction || reaction.type === 'none') return null;
+      if (!reaction) return null;
+      // 对于 none 类型（跳过吃碰杠），检查紧接着是否有本家的吃碰杠操作
+      if (reaction.type === 'none') {
+        const ev = state.events[eventIndex];
+        if (ev?.type === 'dahai' && ev.actor !== PLAYER_ID) {
+          const next = state.events[eventIndex + 1];
+          if (next && ['pon', 'chi', 'daiminkan'].includes(next.type) && next.actor === PLAYER_ID) {
+            return next; // 玩家实际吃了碰了
+          }
+          return null; // 玩家跳过了
+        }
+        return null;
+      }
       const currentRound = state.rounds.find(round => eventIndex >= round.start && eventIndex <= round.end);
       const end = currentRound?.end ?? state.events.length - 1;
       for (let i = eventIndex + 1; i <= end; i++) {
@@ -1132,7 +1165,7 @@
             actual,
             eventIndex,
             roundIndex: Math.max(0, roundIndex),
-            diff: output.type !== 'none' && !sameAction(output, actual),
+            diff: output.type !== 'none' ? !sameAction(output, actual) : actual !== null,
           };
         });
       }
@@ -1172,6 +1205,7 @@
         dora: [info.dora_marker].filter(Boolean),
         kyotaku: info.kyotaku || 0,
         current: null,
+        lastDahai: null,
       };
     }
 
@@ -1182,7 +1216,7 @@
       if (idx >= 0) hand.splice(idx, 1);
     }
 
-    function applyEvent(board, event) {
+    function applyEvent(board, event, eventIdx) {
       const actor = event.actor;
       if (event.type === 'tsumo') {
         board.drawn[actor] = event.pai;
@@ -1198,13 +1232,26 @@
         board.discards[actor].push({
           tile: event.pai,
           riichi: board.riichiPending[actor],
+          eventIdx: eventIdx,
         });
         board.riichiPending[actor] = false;
+        board.lastDahai = { actor, pai: event.pai };
         board.current = event;
       } else if (event.type === 'pon' || event.type === 'chi' || event.type === 'daiminkan') {
         for (const tile of event.consumed || []) removeTile(board.hands[actor], tile);
         board.drawn[actor] = null;
         board.melds[actor].push([event.type, event.pai, ...(event.consumed || [])]);
+        if (board.lastDahai) {
+          const discardPile = board.discards[board.lastDahai.actor];
+          const calledPai = event.pai;
+          for (let i = discardPile.length - 1; i >= 0; i--) {
+            const t = typeof discardPile[i] === 'string' ? discardPile[i] : discardPile[i].tile;
+            if (normalize(t) === normalize(calledPai)) {
+              discardPile.splice(i, 1);
+              break;
+            }
+          }
+        }
         board.current = event;
       } else if (event.type === 'reach') {
         board.riichi[actor] = true;
@@ -1226,7 +1273,7 @@
       const round = state.rounds[choice.roundIndex];
       const board = initialBoard(round);
       for (let i = round.start + 1; i <= eventIndex; i++) {
-        applyEvent(board, state.events[i]);
+        applyEvent(board, state.events[i], i);
       }
       return board;
     }
@@ -1289,6 +1336,8 @@
 
     function renderTable(board, choice, eventIndex) {
       const highlights = choiceTileHighlights(choice, choiceHighlightsEnabled(choice, eventIndex));
+      const round = state.rounds[choice.roundIndex];
+      const callTargetMap = buildCallTargetMap(round, eventIndex);
       $('table').innerHTML = `
         <div class="center-box">
           <div class="center-round">${escapeHtml(roundName(board.round))}</div>
@@ -1299,7 +1348,7 @@
           </div>
         </div>
         ${[0, 1, 2, 3].map(seat => seatHtml(seat, board, highlights)).join('')}
-        ${[0, 1, 2, 3].map(seat => discardHtml(seat, board, choice)).join('')}
+        ${[0, 1, 2, 3].map(seat => discardHtml(seat, board, callTargetMap)).join('')}
         ${settlementHtml(choice, board, eventIndex)}
       `;
     }
@@ -1400,6 +1449,66 @@
       return true;
     }
 
+    function buildCallTargetMap(round, eventIndex) {
+      const map = {};
+      const events = state.events;
+      const ev = events[eventIndex];
+      if (!ev) return map;
+
+      let dahaiIdx = -1;
+      let callIdx = -1;
+
+      if (['pon', 'chi', 'daiminkan'].includes(ev.type)) {
+        callIdx = eventIndex;
+        for (let j = eventIndex - 1; j >= round.start; j--) {
+          if (events[j].type === 'dahai') { dahaiIdx = j; break; }
+        }
+      } else if (ev.type === 'dahai') {
+        dahaiIdx = eventIndex;
+        const next = events[eventIndex + 1];
+        if (next && ['pon', 'chi', 'daiminkan'].includes(next.type)) {
+          callIdx = eventIndex + 1;
+        }
+      }
+
+      if (dahaiIdx < 0) return map;
+
+      const dahaiEv = events[dahaiIdx];
+      const callEv = callIdx >= 0 ? events[callIdx] : null;
+
+      const key = `${dahaiEv.actor}:${dahaiIdx}`;
+
+      // Find PLAYER_ID's call decision for this dahai
+      const aiOutput = state.outputs.find(r => r.event_index === dahaiIdx && r.reaction);
+      let aiMatch = null;
+
+      if (aiOutput) {
+        const aiType = aiOutput.reaction.type;
+        if (callEv && callEv.actor === PLAYER_ID) {
+          // PLAYER_ID called — check if AI recommended the same
+          if (aiType === callEv.type || (aiType === 'pon' && callEv.type === 'daiminkan')) {
+            const opai = aiOutput.reaction.pai;
+            if (callEv.type === 'chi') {
+              aiMatch = !opai || opai === callEv.pai || (callEv.consumed && callEv.consumed.includes(opai));
+            } else {
+              aiMatch = !opai || opai === callEv.pai;
+            }
+          } else {
+            aiMatch = false;
+          }
+        } else {
+          // PLAYER_ID skipped (or another player called but PLAYER_ID had a decision)
+          aiMatch = aiType === 'none';
+        }
+      } else if (callEv && callEv.actor !== PLAYER_ID) {
+        // Another player called, PLAYER_ID had no call decision
+        aiMatch = null;
+      }
+
+      map[key] = { type: callEv ? callEv.type : 'call', aiMatch };
+      return map;
+    }
+
     function chunkDiscards(discards) {
       const rows = [];
       for (let i = 0; i < discards.length; i += 6) {
@@ -1408,7 +1517,7 @@
       return rows;
     }
 
-    function discardHtml(seat, board, choice) {
+    function discardHtml(seat, board, callTargetMap) {
       const pos = seatPosition(seat);
       const side = pos === 'left' || pos === 'right';
       const discards = board.discards[seat] || [];
@@ -1424,8 +1533,9 @@
           ${rowItems.map(({ discard, index }) => {
             const tile = typeof discard === 'string' ? discard : discard.tile;
             const riichi = typeof discard === 'object' && discard.riichi;
-            const called = isCurrentCallTarget(choice, seat, index, discard, discards) ? choice.output.type : null;
-            const calledClass = called === 'chi' ? 'called-chi' : called === 'pon' ? 'called-pon' : called === 'daiminkan' ? 'called-kan' : '';
+            const discardEventIdx = typeof discard === 'object' ? discard.eventIdx : undefined;
+            const callInfo = discardEventIdx != null ? callTargetMap[`${seat}:${discardEventIdx}`] : null;
+            const calledClass = callInfo ? (callInfo.aiMatch === true ? 'called-ai-match' : callInfo.aiMatch === false ? 'called-ai-mismatch' : 'called-default') : '';
             const pose = riichi ? riichiPoseForPosition(pos) : tilePoseForPosition(pos);
             const sideways = pose === 3 || pose === 4;
             return tileHtml(tile, `discarded ${sideways ? 'side' : ''} ${riichi ? 'riichi-discard' : ''} ${calledClass}`, pose);
@@ -1596,7 +1706,7 @@
         </div>
         <div class="compare-row">
           <div class="compare-label">触发事件</div>
-          <div class="compare-value">${escapeHtml(eventText(choice.trigger))}</div>
+          <div class="compare-value">${escapeHtml(callDecisionTriggerText(choice))}</div>
         </div>
         <div class="compare-row">
           <div class="compare-label">牌谱实际动作</div>
