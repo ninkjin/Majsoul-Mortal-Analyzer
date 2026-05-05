@@ -44,6 +44,8 @@ Windows 下最简单的启动方式：
 启动雀魂分析器.cmd
 ```
 
+启动脚本会先检查 `torch`、`mahjong`、`tensoul`、`numpy` 等运行依赖；如果缺失，会自动执行 `pip install -r requirements-runtime.txt`。首次运行需要保持网络连接。
+
 浏览器会打开：
 
 ```text
@@ -123,7 +125,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
 
 ### 环境检查
 
-双击 `检查环境.cmd` 可以自动检测 Python 依赖是否完整（torch、mahjong、tensoul、numpy 等）。如果有缺失会自动安装，全部通过则显示"环境检查通过"。首次使用或遇到启动报错时建议先运行一次。
+双击 `检查环境.cmd` 可以手动检测 Python 依赖是否完整（torch、mahjong、tensoul、numpy 等）。如果有缺失会自动安装，全部通过则显示"环境检查通过"。正常情况下直接运行 `启动雀魂分析器.cmd` 即可；遇到启动报错时再单独运行检查脚本排查。
 
 ## 项目结构
 
