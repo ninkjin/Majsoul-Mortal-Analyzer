@@ -5,8 +5,10 @@ cd /d "%~dp0"
 
 set "PYTHON=%~dp0.conda\python.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\python.exe"
+if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\Scripts\python.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0.conda\pythonw.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\pythonw.exe"
+if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\Scripts\pythonw.exe"
 if not exist "%PYTHON%" (
   echo.
   echo ========================================

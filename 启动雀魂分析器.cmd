@@ -4,8 +4,10 @@ setlocal
 cd /d "%~dp0"
 
 set "PYTHON=%~dp0runtime\python.exe"
+if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\Scripts\python.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0.conda\python.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\pythonw.exe"
+if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\Scripts\pythonw.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0.conda\pythonw.exe"
 if not exist "%PYTHON%" (
   echo.
@@ -56,4 +58,5 @@ if errorlevel 1 (
 start "" "http://127.0.0.1:8765/paipu-analyzer.html"
 
 endlocal
+exit /b 0
 

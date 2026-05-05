@@ -38,6 +38,12 @@
 
 ## 快速开始
 
+### 普通用户
+
+请到 GitHub Releases 下载 `mortal-paipu-analyzer-portable.zip`，不要直接下载 GitHub 页面里的源码 ZIP。Release 里的便携包包含 Python runtime、运行依赖和模型文件，解压后双击 `启动雀魂分析器.cmd` 即可。
+
+### 开发者/源码运行
+
 Windows 下最简单的启动方式：
 
 ```bat

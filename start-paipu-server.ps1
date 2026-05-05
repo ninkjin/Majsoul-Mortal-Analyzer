@@ -5,6 +5,9 @@ Set-Location $root
 
 $python = Join-Path $root "runtime\python.exe"
 if (-not (Test-Path $python)) {
+  $python = Join-Path $root "runtime\Scripts\python.exe"
+}
+if (-not (Test-Path $python)) {
   $python = Join-Path $root ".conda\python.exe"
 }
 if (-not (Test-Path $python)) {

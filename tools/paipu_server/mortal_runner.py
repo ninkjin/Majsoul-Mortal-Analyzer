@@ -8,7 +8,9 @@ def runtime_python_candidates(root):
     root = Path(root)
     return [
         root / "runtime" / "python.exe",
+        root / "runtime" / "Scripts" / "python.exe",
         root / ".runtime" / "python.exe",
+        root / ".runtime" / "Scripts" / "python.exe",
         root / ".conda" / "python.exe",
         root / ".venv" / "Scripts" / "python.exe",
     ]

@@ -4,7 +4,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $runtime = Join-Path $root "runtime"
 $python = Join-Path $runtime "python.exe"
 if (-not (Test-Path $python)) {
-  throw "runtime\python.exe was not found. Run scripts\setup-runtime.ps1 first."
+  $python = Join-Path $runtime "Scripts\python.exe"
+}
+if (-not (Test-Path $python)) {
+  throw "runtime Python was not found. Run scripts\setup-runtime.ps1 first."
 }
 
 $dist = Join-Path $root "dist"
@@ -22,7 +25,6 @@ $include = @(
   "mortal",
   "tools",
   "log-viewer",
-  ".tools",
   "mortal-output-viewer.html",
   "majsoul-paipu-fetcher.html",
   "start-paipu-server.ps1",
@@ -39,6 +41,13 @@ foreach ($item in $include) {
   }
 }
 
+$reviewer = Join-Path $root ".tools\mjai-reviewer\target\release\mjai-reviewer.exe"
+if (Test-Path $reviewer) {
+  $reviewerTarget = Join-Path $stage ".tools\mjai-reviewer\target\release"
+  New-Item -ItemType Directory -Path $reviewerTarget -Force | Out-Null
+  Copy-Item -LiteralPath $reviewer -Destination $reviewerTarget -Force
+}
+
 Get-ChildItem -Path $root -Filter "*.cmd" | ForEach-Object {
   Copy-Item -LiteralPath $_.FullName -Destination $stage -Force
 }
@@ -46,7 +55,7 @@ Get-ChildItem -Path $root -Filter "*.cmd" | ForEach-Object {
 if (Test-Path $zip) {
   Remove-Item -LiteralPath $zip -Force
 }
-Compress-Archive -LiteralPath (Join-Path $stage "*") -DestinationPath $zip -Force
+Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
 
 Write-Host "Portable package written:"
 Write-Host $zip
