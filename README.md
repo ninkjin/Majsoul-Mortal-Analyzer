@@ -115,7 +115,7 @@ tmp/paipu_jobs/
 
 ## 便携运行环境
 
-如果不想依赖 Docker Desktop，可以用脚本创建本地 Python runtime：
+如果不想依赖 Docker Desktop，可以用脚本检查并补齐本地 `.conda` 运行环境：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-runtime.ps1
@@ -127,7 +127,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-runtime.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
 ```
 
-便携包会包含 `runtime`、页面、脚本和 `mj_model` 下的模型文件。
+打包脚本会把本地 `.conda` 复制成发布包里的 `runtime`，便携包会包含 Python runtime、运行依赖、页面、脚本和 `mj_model` 下的模型文件。不要用普通 `python -m venv runtime` 生成发布包，venv 会记录本机路径，换到用户电脑后可能无法运行。
 
 ### 环境检查
 

@@ -1,27 +1,17 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$runtime = Join-Path $root "runtime"
-$python = Join-Path $runtime "Scripts\python.exe"
-$bootstrapPython = Join-Path $root ".conda\python.exe"
-if (-not (Test-Path $bootstrapPython)) {
-  $bootstrapPython = "python"
-}
-
-try {
-  & $bootstrapPython --version | Out-Host
-} catch {
-  throw "Python was not found. Install Python 3.12 first, or keep .conda\python.exe in this project, then rerun this script."
-}
+$python = Join-Path $root ".conda\python.exe"
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   throw "Rust/Cargo was not found. Install Rust from https://rustup.rs first, then rerun this script."
 }
 
 if (-not (Test-Path $python)) {
-  Write-Host "Creating portable runtime: $runtime"
-  & $bootstrapPython -m venv $runtime
+  throw ".conda\python.exe was not found. Create a local conda environment at .conda first, then rerun this script."
 }
+
+& $python --version | Out-Host
 
 Write-Host "Upgrading pip..."
 & $python -m pip install --upgrade pip
@@ -50,5 +40,5 @@ Copy-Item -LiteralPath $builtDll -Destination (Join-Path $sitePackages "libriich
 & $python -c "import torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; print('runtime deps ok')"
 
 Write-Host ""
-Write-Host "Runtime is ready: $python"
-Write-Host "You can now run the analyzer launcher without Docker Desktop."
+Write-Host ".conda runtime source is ready: $python"
+Write-Host "You can now run scripts\package-portable.ps1 to build the portable zip."

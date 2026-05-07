@@ -1,14 +1,16 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$runtime = Join-Path $root "runtime"
-$python = Join-Path $runtime "python.exe"
+$runtimeSource = Join-Path $root ".conda"
+$python = Join-Path $runtimeSource "python.exe"
 if (-not (Test-Path $python)) {
-  $python = Join-Path $runtime "Scripts\python.exe"
+  $runtimeSource = Join-Path $root "runtime"
+  $python = Join-Path $runtimeSource "python.exe"
 }
 if (-not (Test-Path $python)) {
-  throw "runtime Python was not found. Run scripts\setup-runtime.ps1 first."
+  throw "portable Python was not found. Prepare .conda\python.exe first."
 }
+& $python -c "import torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; print('portable source deps ok')"
 
 $dist = Join-Path $root "dist"
 $stage = Join-Path $dist "mortal-paipu-analyzer"
@@ -20,7 +22,6 @@ if (Test-Path $stage) {
 New-Item -ItemType Directory -Path $stage | Out-Null
 
 $include = @(
-  "runtime",
   "mj_model",
   "mortal",
   "tools",
@@ -33,6 +34,8 @@ $include = @(
   "Cargo.toml",
   "Cargo.lock"
 )
+
+Copy-Item -LiteralPath $runtimeSource -Destination (Join-Path $stage "runtime") -Recurse -Force
 
 foreach ($item in $include) {
   $source = Join-Path $root $item
