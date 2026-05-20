@@ -53,12 +53,20 @@ def main():
     bot = Bot(engine, player_id)
 
     for event_index, line in enumerate(filtered_trimmed_lines(sys.stdin)):
-        reaction = bot.react(line)
-        if reaction:
+        try:
+            reaction = bot.react(line)
+            if reaction:
+                print(json.dumps({
+                    'event_index': event_index,
+                    'event': json.loads(line),
+                    'reaction': json.loads(reaction),
+                }, ensure_ascii=False), flush=True)
+        except RuntimeError as e:
+            # 状态同步失败时跳过该事件，继续处理后续事件
             print(json.dumps({
                 'event_index': event_index,
                 'event': json.loads(line),
-                'reaction': json.loads(reaction),
+                'reaction': {'type': 'none', 'error': str(e)},
             }, ensure_ascii=False), flush=True)
 
 
