@@ -9,9 +9,7 @@ import threading
 import time
 import traceback
 import shutil
-import urllib.error
 import urllib.parse
-import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +32,7 @@ HISTORY_KEEP = 20
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 _REWARD_CALCULATOR_MODULE = None
+PRIVATE_STATIC_FILES = {".env", "paipu-service.local.json"}
 
 
 def extract_paipu(value):
@@ -45,6 +44,11 @@ def extract_paipu(value):
 
 def safe_name(value):
     return re.sub(r"[^0-9A-Za-z_.-]+", "_", value).strip("_") or "paipu"
+
+
+def static_path_is_private(request_path):
+    parts = Path(urllib.parse.unquote(request_path).lstrip("/")).parts
+    return any(part in PRIVATE_STATIC_FILES or part == ".git" for part in parts)
 
 
 def available_model_names():
@@ -80,35 +84,10 @@ def set_job(job_id, **updates):
         JOBS[job_id]["updated_at"] = time.time()
 
 
-def public_record_replay(paipu, out_path):
-    url = f"https://game.maj-soul.com/1/api/account/record_replay?paipu={urllib.parse.quote(paipu)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mortal-paipu-server/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as res:
-            raw = res.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"公开接口请求失败：HTTP {exc.code}") from exc
+def download_with_remote_service(url, tenhou_path, status_callback=None):
+    from remote_service_fetcher import fetch_remote_tenhou
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("公开接口返回的不是合法 JSON") from exc
-
-    out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return out_path
-
-
-def download_with_majgg(paipu, source_path, mjai_path, tenhou_summary_path=None):
-    from majgg_fetcher import fetch_majgg_game, majgg_game_to_mjai_file, majgg_game_to_tenhou_summary_file
-
-    record_uuid = paipu.split("_", 1)[0]
-    if not record_uuid:
-        raise ValueError("empty Mahjong Soul record uuid")
-    data = fetch_majgg_game(record_uuid, source_path)
-    majgg_game_to_mjai_file(data, mjai_path)
-    if tenhou_summary_path:
-        majgg_game_to_tenhou_summary_file(data, tenhou_summary_path)
-    return source_path
+    return fetch_remote_tenhou(url, tenhou_path, status_callback=status_callback)
 
 
 def _load_reward_calculator_module():
@@ -191,6 +170,11 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
         if player_id not in (0, 1, 2, 3):
             raise ValueError("player_id 必须是 0-3")
         return player_id
+
+    source_data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+    target_actor = source_data.get("_target_actor")
+    if isinstance(target_actor, int) and target_actor in (0, 1, 2, 3):
+        return target_actor
 
     account_id = account_id_from_paipu(paipu)
     if account_id is not None:
@@ -339,13 +323,12 @@ def cleanup_history(keep=HISTORY_KEEP):
         shutil.rmtree(old_dir, ignore_errors=True)
 
 
-def analyze_job(job_id, url, player_id, username=None, password=None, player_name="", fetch_method="majgg", model_name=DEFAULT_MODEL_NAME):
+def analyze_job(job_id, url, player_id, username=None, password=None, player_name="", fetch_method="remote", model_name=DEFAULT_MODEL_NAME):
     work_dir = PAIPU_JOBS_DIR / job_id
     work_dir.mkdir(parents=True, exist_ok=True)
     paipu = extract_paipu(url)
     prefix = safe_name(paipu)
     source_path = work_dir / f"{prefix}.source.json"
-    tenhou_summary_path = work_dir / f"{prefix}.tenhou-summary.json"
     mjai_path = work_dir / "log.json"
     mapped_path = work_dir / "mortal-output-p2-mapped.jsonl"
     viewer_tenhou_path = source_path
@@ -353,12 +336,25 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
     set_job(job_id, status="running", step="提取 paipu", paipu=paipu, progress=10)
 
     try:
-        if fetch_method == "majgg":
-            set_job(job_id, step="使用 maj.gg 免登录获取", progress=20)
-            download_with_majgg(paipu, source_path, mjai_path, tenhou_summary_path)
-            viewer_tenhou_path = tenhou_summary_path
+        if fetch_method == "remote":
+            remote_steps = {
+                "queued": ("远程牌谱服务排队中", 22),
+                "fetching": ("远程牌谱服务正在获取牌谱", 30),
+                "retry_wait": ("服务器正在恢复雀魂登录，任务会自动继续（可能需 1–4 分钟）", 28),
+                "converting": ("远程牌谱服务正在转换牌谱", 40),
+                "ready": ("远程牌谱已就绪", 45),
+            }
+
+            def update_remote_status(status):
+                step, progress = remote_steps.get(status, ("等待远程牌谱服务", 20))
+                set_job(job_id, step=step, progress=progress)
+
+            set_job(job_id, step="提交到 ninklang.tech 牌谱服务", progress=20)
+            download_with_remote_service(url, source_path, update_remote_status)
             player_id = resolve_player_id(source_path, player_id, player_name, paipu)
             set_job(job_id, player_id=player_id)
+            set_job(job_id, step="转换为 mjai log.json", progress=50)
+            convert_tenhou_to_mjai(source_path, mjai_path, player_id)
         elif fetch_method == "tensoul":
             set_job(job_id, step="使用 tensoul 账号密码获取", progress=20)
             download_with_tensoul(url, source_path, username=username, password=password)
@@ -367,7 +363,7 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
             set_job(job_id, step="转换为 mjai log.json", progress=45)
             convert_tenhou_to_mjai(source_path, mjai_path, player_id)
         else:
-            raise ValueError("fetch_method 必须是 majgg 或 tensoul")
+            raise ValueError("fetch_method 必须是 remote 或 tensoul")
 
         set_job(job_id, step="运行 Mortal 分析", progress=70, model_name=model_name)
         run_mortal_mapping(mjai_path, mapped_path, player_id, model_name)
@@ -600,7 +596,7 @@ ANALYZER_HTML = """<!doctype html>
   <main>
     <header>
       <h1>雀魂牌谱一键分析</h1>
-      <div class="sub">粘贴雀魂分享链接，选择 maj.gg 免登录获取或 tensoul 账号密码获取，然后自动打开现有复盘页。</div>
+      <div class="sub">粘贴雀魂分享链接，选择 ninklang.tech 在线获取或 tensoul 本地账号密码获取，然后自动打开现有复盘页。</div>
     </header>
     <section>
       <label>
@@ -620,13 +616,13 @@ ANALYZER_HTML = """<!doctype html>
           </span>
         </label>
       </div>
-      <div class="security-note">maj.gg 免登录不需要账号密码；tensoul 会使用账号密码在本地获取牌谱，这里会挤号，但是不会泄露你的账号密码，因为全部都是在本地进行。两种方式成功后都会写入本地历史。</div>
+      <div class="security-note">ninklang.tech 在线获取只会向你的牌谱服务提交分享链接，不会上传雀魂账号密码；tensoul 会使用账号密码在本机获取牌谱，这里会挤号。两种方式成功后都会写入本地历史。</div>
       <div class="action-grid">
         <label>
           获取方式
           <select id="fetch-mode">
-            <option value="majgg" selected>maj.gg 免登录获取</option>
-            <option value="tensoul">tensoul 账号密码获取</option>
+            <option value="remote" selected>ninklang.tech 在线获取（推荐）</option>
+            <option value="tensoul">tensoul 本地账号密码获取</option>
           </select>
         </label>
         <label>
@@ -707,7 +703,7 @@ ANALYZER_HTML = """<!doctype html>
       togglePasswordBtn.disabled = !tensoulMode;
       statusBox.textContent = tensoulMode
         ? 'tensoul 模式会使用账号密码在本地获取牌谱。'
-        : 'maj.gg 免登录模式不需要账号密码。';
+        : '在线模式通过 ninklang.tech 获取牌谱，不需要输入雀魂账号密码。';
     }
 
     async function loadModels() {
@@ -930,6 +926,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"models": available_model_names(), "default": DEFAULT_MODEL_NAME})
             return
 
+        if static_path_is_private(parsed.path):
+            self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+            return
         file_path = (ROOT / parsed.path.lstrip("/")).resolve()
         if ROOT not in file_path.parents and file_path != ROOT:
             self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
@@ -978,12 +977,12 @@ class Handler(BaseHTTPRequestHandler):
             url = str(payload.get("url") or "")
             player_id = payload.get("player_id", "auto")
             player_name = str(payload.get("player_name") or "")
-            fetch_method = str(payload.get("fetch_method") or "majgg")
+            fetch_method = str(payload.get("fetch_method") or "remote")
             model_name = str(payload.get("model_name") or DEFAULT_MODEL_NAME)
             username = str(payload.get("username") or "")
             password = str(payload.get("password") or "")
-            if fetch_method not in ("majgg", "tensoul"):
-                raise ValueError("fetch_method 必须是 majgg 或 tensoul")
+            if fetch_method not in ("remote", "tensoul"):
+                raise ValueError("fetch_method 必须是 remote 或 tensoul")
             resolve_model_path(model_name)
             if str(player_id) != "auto":
                 player_id = int(player_id)

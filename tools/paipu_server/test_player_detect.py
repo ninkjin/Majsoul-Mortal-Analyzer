@@ -15,7 +15,7 @@ class PlayerDetectTest(unittest.TestCase):
 
         self.assertEqual(account_id_from_paipu(paipu), 18920167)
 
-    def test_auto_detects_majgg_seat_from_paipu_suffix(self):
+    def test_auto_detects_legacy_source_seat_from_paipu_suffix(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "game.source.json"
             source.write_text(json.dumps({
@@ -37,7 +37,7 @@ class PlayerDetectTest(unittest.TestCase):
                 0,
             )
 
-    def test_detects_majgg_seat_by_nickname(self):
+    def test_detects_legacy_source_seat_by_nickname(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "game.source.json"
             source.write_text(json.dumps({
@@ -57,6 +57,16 @@ class PlayerDetectTest(unittest.TestCase):
             source.write_text(json.dumps({"name": ["a", "b", "lastkasd", "d"]}), encoding="utf-8")
 
             self.assertEqual(resolve_player_id(source, "auto", "lastkasd"), 2)
+
+    def test_uses_remote_service_target_actor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "game.tenhou.json"
+            source.write_text(
+                json.dumps({"ver": "2.3", "name": ["a", "b", "c", "d"], "log": [], "_target_actor": 2}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(resolve_player_id(source, "auto", "", "paipu=with_suffix"), 2)
 
     def test_defaults_tenhou_source_to_first_player_with_paipu_suffix(self):
         with tempfile.TemporaryDirectory() as tmp:
