@@ -28,6 +28,7 @@ $include = @(
   "log-viewer",
   "mortal-output-viewer.html",
   "majsoul-paipu-fetcher.html",
+  "paipu-service.example.json",
   "start-paipu-server.ps1",
   "requirements-runtime.txt",
   "environment.yml",

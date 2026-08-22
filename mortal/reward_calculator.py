@@ -141,7 +141,7 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
                         flush=True,
                     )
             else:
-                raise RuntimeError('无法检测雀魂网关线路，请稍后重试或切换 maj.gg 免登录获取。') from last_error
+                raise RuntimeError('无法检测雀魂网关线路，请稍后重试或切换 ninklang.tech 在线获取。') from last_error
 
         downloader.channel = MSRPCChannel(downloader.endpoint)
         downloader.lobby = Lobby(downloader.channel)

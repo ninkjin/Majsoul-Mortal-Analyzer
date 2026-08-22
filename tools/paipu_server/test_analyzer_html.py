@@ -8,13 +8,20 @@ import server
 
 
 class AnalyzerHtmlTest(unittest.TestCase):
-    def test_frontend_offers_majgg_and_tensoul_fetch_modes(self):
+    def test_local_api_key_config_is_never_served_as_a_static_file(self):
+        self.assertTrue(server.static_path_is_private("/paipu-service.local.json"))
+        self.assertTrue(server.static_path_is_private("/.env"))
+        self.assertTrue(server.static_path_is_private("/.git/config"))
+        self.assertFalse(server.static_path_is_private("/mortal-output-viewer.html"))
+
+    def test_frontend_offers_remote_service_and_tensoul_fetch_modes(self):
         html = server.ANALYZER_HTML
 
         self.assertIn('id="fetch-mode"', html)
-        self.assertIn('<option value="majgg" selected>maj.gg 免登录获取</option>', html)
-        self.assertIn('<option value="tensoul">tensoul 账号密码获取</option>', html)
+        self.assertIn('<option value="remote" selected>ninklang.tech 在线获取（推荐）</option>', html)
+        self.assertIn('<option value="tensoul">tensoul 本地账号密码获取</option>', html)
         self.assertIn("fetch_method: fetchModeSelect.value", html)
+        self.assertNotIn("maj.gg", html)
         self.assertNotIn("https://mjai.ekyu.moe/zh-cn.html", html)
         self.assertNotIn("window.open(target", html)
 

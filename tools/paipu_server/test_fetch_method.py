@@ -25,18 +25,19 @@ class FetchMethodTest(unittest.TestCase):
     def run_job_with_patches(self, fetch_method):
         calls = []
 
-        def fake_majgg(paipu, source_path, mjai_path, tenhou_summary_path=None):
-            calls.append("majgg")
-            source_path.write_text(json.dumps({
-                "Game": {
-                    "accounts": [
-                        {"accountId": 18920167, "nickname": "lastkasd"},
-                    ]
-                }
-            }), encoding="utf-8")
-            mjai_path.write_text("[]", encoding="utf-8")
-            if tenhou_summary_path:
-                tenhou_summary_path.write_text(json.dumps({"log": []}), encoding="utf-8")
+        def fake_remote(url, source_path, status_callback=None):
+            calls.append("remote")
+            source_path.write_text(
+                json.dumps({
+                    "ver": "2.3",
+                    "name": ["a", "b", "lastkasd", "d"],
+                    "log": [],
+                    "_target_actor": 2,
+                }),
+                encoding="utf-8",
+            )
+            if status_callback:
+                status_callback("ready")
 
         def fake_tensoul(url, source_path, username=None, password=None):
             calls.append("tensoul")
@@ -50,7 +51,7 @@ class FetchMethodTest(unittest.TestCase):
             jobs_dir = Path(tmp) / "jobs"
             with (
                 patch.object(server, "PAIPU_JOBS_DIR", jobs_dir),
-                patch.object(server, "download_with_majgg", fake_majgg),
+                patch.object(server, "download_with_remote_service", fake_remote),
                 patch.object(server, "download_with_tensoul", fake_tensoul),
                 patch.object(server, "convert_tenhou_to_mjai", fake_convert),
                 patch.object(server, "run_mortal_mapping", lambda mjai, mapped, player, model_name="mortal.pth": mapped.write_text("{}", encoding="utf-8")),
@@ -69,7 +70,7 @@ class FetchMethodTest(unittest.TestCase):
                 server.analyze_job(
                     "job",
                     "https://game.maj-soul.com/1/?paipu=260213-b409422a-54ad-4699-a9fe-23f9ed4c2390_a48969976",
-                    "0",
+                    "auto",
                     username="u",
                     password="p",
                     fetch_method=fetch_method,
@@ -78,13 +79,14 @@ class FetchMethodTest(unittest.TestCase):
 
         return calls, server.JOBS["job"]
 
-    def test_majgg_method_uses_only_majgg_download(self):
-        calls, job = self.run_job_with_patches("majgg")
+    def test_remote_method_downloads_tenhou_then_converts_to_mjai(self):
+        calls, job = self.run_job_with_patches("remote")
 
-        self.assertEqual(calls, ["majgg"])
+        self.assertEqual(calls, ["remote", "convert"])
         self.assertEqual(job["status"], "done")
+        self.assertEqual(job["player_id"], 2)
 
-    def test_tensoul_method_skips_majgg_and_converts_tenhou_log(self):
+    def test_tensoul_method_skips_remote_service_and_converts_tenhou_log(self):
         calls, job = self.run_job_with_patches("tensoul")
 
         self.assertEqual(calls, ["tensoul", "convert"])

@@ -5,7 +5,7 @@
 本项目保留了 Mortal 的核心 AI 推理能力，并增加了一个本地网页：
 
 - 粘贴雀魂牌谱分享链接。
-- 选择获取方式：`maj.gg 免登录获取` 或 `tensoul 账号密码获取`。
+- 选择获取方式：`ninklang.tech 在线获取` 或 `tensoul 本地账号密码获取`。
 - 选择分析玩家和 Mortal 模型。
 - 自动生成复盘数据并打开本地复盘页面。
 - 在复盘页里查看实际切牌、Mortal 推荐、P 值、差异标记和每局结算。
@@ -90,13 +90,23 @@ state['current_dqn']
 
 ## 牌谱获取方式
 
-### maj.gg 免登录获取
+### ninklang.tech 在线获取
 
-默认方式。它会使用 [maj.gg](https://maj.gg/) 的 API 读取公开雀魂牌谱数据，不需要输入账号密码。
+默认方式。它会把雀魂分享链接提交到自建的 [ninklang.tech](https://ninklang.tech/) 牌谱服务，等待后端获取并转换为 Tenhou 6 JSON，再交给本机 Mortal 分析。使用者不需要输入自己的雀魂账号密码。
 
-这条路径适合大多数分享链接，也是推荐的主路径。
+程序接口使用可撤销的 API Key。复制示例配置并填写管理员后台创建的 Mortal 专用密钥：
 
-### tensoul 账号密码获取
+```powershell
+Copy-Item .\paipu-service.example.json .\paipu-service.local.json
+```
+
+`paipu-service.local.json` 已被 Git 忽略，不会进入源码提交或便携包。也可以改用环境变量 `MORTAL_PAIPU_API_KEY` 和 `MORTAL_PAIPU_SERVICE_URL`。API Key 只用于调用牌谱服务，不是雀魂账号凭据。
+
+不要把真实 API Key 写入源码、示例文件或公开发布包。桌面客户端内置的共享密钥始终可以被提取；如果以后要向大量用户分发，应给它单独设置限流，并保留随时撤销、轮换的能力。
+
+这条路径适合大多数分享链接，也是推荐的主路径。远程任务处于排队、获取或转换状态时，本地页面会持续显示对应进度。
+
+### tensoul 本地账号密码获取
 
 备用方式。它通过 [tensoul](https://pypi.org/project/tensoul/) 在本地获取雀魂牌谱，需要输入雀魂账号和密码。
 
@@ -140,6 +150,7 @@ tools/paipu_server/       本地分析服务和牌谱获取逻辑
 tools/map_mortal_output.py Mortal 输出映射脚本
 mortal-output-viewer.html  复盘页面
 majsoul-paipu-fetcher.html 牌谱输入页面
+paipu-service.example.json 远程牌谱服务配置示例（不含真实密钥）
 mj_model/                 Mortal 模型目录
 viewer-data/              当前复盘数据目录
 scripts/                  runtime 安装和便携打包脚本
@@ -152,7 +163,7 @@ scripts/                  runtime 安装和便携打包脚本
 - [Equim-chan/Mortal](https://github.com/Equim-chan/Mortal)：本项目的基础，提供日麻 AI、`libriichi`、mjai Bot 和核心推理代码。
 - [Mortal 文档站](https://mortal.ekyu.moe/)：Mortal 的使用和模型说明。
 - [MahjongRepository/mahjong](https://github.com/MahjongRepository/mahjong)：用于日麻和牌、役种、番符相关计算。
-- [maj.gg](https://maj.gg/)：提供公开雀魂牌谱的免登录解析能力，本项目的默认牌谱获取路径会调用它的 API。
+- [ninklang.tech](https://ninklang.tech/)：本项目配套的异步牌谱获取服务，负责使用后台专用账号获取并转换牌谱。
 - [tensoul](https://pypi.org/project/tensoul/)：作为账号密码方式获取雀魂牌谱的备用路径。
 
 本仓库是在 Mortal 的基础上做的本地工具化改造。请遵守上游项目和依赖库的许可证要求。
