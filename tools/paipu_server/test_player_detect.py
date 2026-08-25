@@ -2,14 +2,38 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import server
 from server import account_id_from_paipu, resolve_player_id
 
 
 class PlayerDetectTest(unittest.TestCase):
+    def test_rejects_boolean_player_id(self):
+        with self.assertRaisesRegex(ValueError, "player_id"):
+            server.resolve_player_id("unused.json", True)
+
+    def test_paipu_input_has_safe_length_and_character_limits(self):
+        with self.assertRaisesRegex(ValueError, "过长"):
+            server.extract_paipu("https://game.maj-soul.com/1/?paipu=" + "a" * 513)
+        with self.assertRaisesRegex(ValueError, "控制字符"):
+            server.extract_paipu("https://game.maj-soul.com/1/?paipu=abc%00def")
+        self.assertEqual(len(server.safe_name("a" * 1000)), server.MAX_SAFE_NAME_CHARS)
+
+    def test_auto_detection_parses_source_json_only_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "game.source.json"
+            source.write_text(json.dumps({"name": ["a", "target", "c", "d"]}), encoding="utf-8")
+            real_loads = json.loads
+            with patch.object(server.json, "loads", wraps=real_loads) as loads:
+                player_id = server.resolve_player_id(source, "auto", player_name="target")
+
+        self.assertEqual(player_id, 1)
+        self.assertEqual(loads.call_count, 1)
+
     def test_decodes_account_id_from_paipu_suffix(self):
         paipu = "260213-b409422a-54ad-4699-a9fe-23f9ed4c2390_a48969976"
 

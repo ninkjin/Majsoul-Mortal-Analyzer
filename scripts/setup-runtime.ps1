@@ -20,6 +20,7 @@ Write-Host "Installing Python dependencies..."
 & $python -m pip install -r (Join-Path $root "requirements-runtime.txt")
 
 Write-Host "Building and installing libriichi..."
+& $python -m pip install maturin
 $manifest = Join-Path $root "libriichi\Cargo.toml"
 & $python -m maturin build --release --manifest-path $manifest -i $python
 $wheel = Get-ChildItem -Path (Join-Path $root "target\wheels") -Filter "libriichi-*-cp*.whl" |

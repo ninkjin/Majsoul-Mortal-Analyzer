@@ -2,7 +2,10 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import math
+import mimetypes
 import os
+import queue
 import re
 import sys
 import threading
@@ -29,26 +32,62 @@ LEGACY_CURRENT_OUTPUT_NAMES = (
     "mortal-viewer-config.json",
 )
 HISTORY_KEEP = 20
+JOB_STATUS_KEEP = 100
+MAX_PENDING_JOBS = 10
+MAX_PAIPU_CHARS = 512
+MAX_SAFE_NAME_CHARS = 120
+MAX_REQUEST_BODY_BYTES = 64 * 1024
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+CURRENT_OUTPUTS_LOCK = threading.Lock()
 _REWARD_CALCULATOR_MODULE = None
 PRIVATE_STATIC_FILES = {".env", "paipu-service.local.json"}
+PUBLIC_STATIC_FILES = {"majsoul-paipu-fetcher.html", "mortal-output-viewer.html"}
+PUBLIC_VIEWER_FILES = {
+    "log.json",
+    "majsoul-tenhou-current.json",
+    "mortal-output-p2-mapped.jsonl",
+    "mortal-viewer-config.json",
+}
+
+
+class HttpRequestError(ValueError):
+    def __init__(self, message, status=HTTPStatus.BAD_REQUEST):
+        super().__init__(message)
+        self.status = status
 
 
 def extract_paipu(value):
     match = re.search(r"[?&]paipu=([^&#\s]+)", value or "") or re.search(r"^paipu=([^&#\s]+)", value or "")
     if not match:
         raise ValueError("没有找到 paipu 参数")
-    return urllib.parse.unquote(match.group(1))
+    paipu = urllib.parse.unquote(match.group(1))
+    if len(paipu) > MAX_PAIPU_CHARS:
+        raise ValueError("paipu 参数过长")
+    if any(ord(character) < 32 for character in paipu):
+        raise ValueError("paipu 参数包含控制字符")
+    return paipu
 
 
 def safe_name(value):
-    return re.sub(r"[^0-9A-Za-z_.-]+", "_", value).strip("_") or "paipu"
+    name = re.sub(r"[^0-9A-Za-z_.-]+", "_", value).strip("_")[:MAX_SAFE_NAME_CHARS]
+    return name or "paipu"
 
 
 def static_path_is_private(request_path):
-    parts = Path(urllib.parse.unquote(request_path).lstrip("/")).parts
+    parts = (part.casefold() for part in Path(urllib.parse.unquote(request_path).lstrip("/")).parts)
     return any(part in PRIVATE_STATIC_FILES or part == ".git" for part in parts)
+
+
+def static_path_is_public(request_path):
+    parts = tuple(part.casefold() for part in Path(urllib.parse.unquote(request_path).lstrip("/")).parts)
+    if ".." in parts:
+        return False
+    if len(parts) == 1:
+        return parts[0] in PUBLIC_STATIC_FILES
+    if len(parts) == 2 and parts[0] == "viewer-data":
+        return parts[1] in PUBLIC_VIEWER_FILES
+    return len(parts) >= 3 and parts[:2] == ("log-viewer", "files")
 
 
 def available_model_names():
@@ -82,6 +121,22 @@ def set_job(job_id, **updates):
     with JOBS_LOCK:
         JOBS[job_id].update(updates)
         JOBS[job_id]["updated_at"] = time.time()
+
+
+def prune_finished_jobs(keep=JOB_STATUS_KEEP):
+    keep = max(0, int(keep))
+    with JOBS_LOCK:
+        finished = sorted(
+            (
+                (job_id, job)
+                for job_id, job in JOBS.items()
+                if job.get("status") in ("done", "error")
+            ),
+            key=lambda item: float(item[1].get("updated_at") or 0),
+            reverse=True,
+        )
+        for job_id, _job in finished[keep:]:
+            JOBS.pop(job_id, None)
 
 
 def download_with_remote_service(url, tenhou_path, status_callback=None):
@@ -126,16 +181,34 @@ def run_mortal_mapping(mjai_path, mapped_path, player_id, model_name=DEFAULT_MOD
 
 
 def copy_outputs(tenhou_path, mjai_path, mapped_path, player_id=None):
-    CURRENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (CURRENT_DATA_DIR / "log.json").write_bytes(mjai_path.read_bytes())
-    (CURRENT_DATA_DIR / "mortal-output-p2-mapped.jsonl").write_bytes(mapped_path.read_bytes())
-    (CURRENT_DATA_DIR / "majsoul-tenhou-current.json").write_bytes(tenhou_path.read_bytes())
-    if player_id is not None:
-        (CURRENT_DATA_DIR / "mortal-viewer-config.json").write_text(
-            json.dumps({"player_id": int(player_id)}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    cleanup_legacy_current_outputs()
+    output_pairs = [
+        (Path(mjai_path), CURRENT_DATA_DIR / "log.json"),
+        (Path(mapped_path), CURRENT_DATA_DIR / "mortal-output-p2-mapped.jsonl"),
+        (Path(tenhou_path), CURRENT_DATA_DIR / "majsoul-tenhou-current.json"),
+    ]
+    staged = []
+    with CURRENT_OUTPUTS_LOCK:
+        CURRENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            for source, target in output_pairs:
+                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+                staged.append((temporary, target))
+                shutil.copyfile(source, temporary)
+            if player_id is not None:
+                target = CURRENT_DATA_DIR / "mortal-viewer-config.json"
+                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+                staged.append((temporary, target))
+                temporary.write_text(
+                    json.dumps({"player_id": int(player_id)}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            for temporary, target in staged:
+                temporary.replace(target)
+            cleanup_legacy_current_outputs()
+        finally:
+            for temporary, _target in staged:
+                if temporary.exists():
+                    temporary.unlink()
 
 
 def cleanup_legacy_current_outputs():
@@ -158,13 +231,22 @@ def write_history_metadata(job_id, work_dir, url, paipu, player_id, tenhou_path,
             "mapped": mapped_path.name,
         },
     }
-    (work_dir / "metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    metadata_path = work_dir / "metadata.json"
+    temporary = metadata_path.with_name(f".{metadata_path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(metadata_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""):
+    if isinstance(requested_player_id, bool):
+        raise ValueError("player_id 必须是 0-3")
     if str(requested_player_id) != "auto":
         player_id = int(requested_player_id)
         if player_id not in (0, 1, 2, 3):
@@ -173,22 +255,22 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
 
     source_data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
     target_actor = source_data.get("_target_actor")
-    if isinstance(target_actor, int) and target_actor in (0, 1, 2, 3):
+    if type(target_actor) is int and target_actor in (0, 1, 2, 3):
         return target_actor
 
     account_id = account_id_from_paipu(paipu)
     if account_id is not None:
-        seat = player_seat_by_account_id(source_path, account_id)
+        seat = player_seat_by_account_id(source_data, account_id)
         if seat is not None:
             return seat
-        if tenhou_source_has_player_names(source_path):
+        if tenhou_source_has_player_names(source_data):
             return 0
 
     target = str(player_name or "").strip()
     if not target:
         raise ValueError("无法从分享链接识别默认视角，请手动选择玩家 ID")
 
-    names = player_names_from_source(source_path)
+    names = player_names_from_source(source_data)
     lowered = target.casefold()
     for seat, name in enumerate(names):
         if str(name).strip().casefold() == lowered:
@@ -199,22 +281,28 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
     raise ValueError(f"没有在牌谱玩家里找到昵称：{target}")
 
 
-def tenhou_source_has_player_names(source_path):
-    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+def load_source_data(source):
+    if isinstance(source, dict):
+        return source
+    return json.loads(Path(source).read_text(encoding="utf-8-sig"))
+
+
+def tenhou_source_has_player_names(source):
+    data = load_source_data(source)
     names = data.get("name") or []
     return len(names) >= 4
 
 
-def player_seat_by_account_id(source_path, account_id):
-    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+def player_seat_by_account_id(source, account_id):
+    data = load_source_data(source)
     for account in data.get("Game", {}).get("accounts", []):
         if int(account.get("accountId", -1)) == int(account_id):
             return int(account.get("seat", 0))
     return None
 
 
-def player_names_from_source(source_path):
-    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+def player_names_from_source(source):
+    data = load_source_data(source)
     if "Game" in data:
         names = [str(i) for i in range(4)]
         for account in data["Game"].get("accounts", []):
@@ -239,15 +327,18 @@ def completed_history_items(limit=5):
             continue
         try:
             metadata = history_metadata_for_dir(work_dir)
-        except (FileNotFoundError, json.JSONDecodeError):
+            created_at = float(metadata.get("created_at") or work_dir.stat().st_mtime)
+            if not math.isfinite(created_at) or created_at < 0:
+                raise ValueError("历史复盘时间无效")
+            created_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
+        except (FileNotFoundError, OSError, OverflowError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        created_at = float(metadata.get("created_at") or work_dir.stat().st_mtime)
         items.append({
             "job_id": metadata.get("job_id") or work_dir.name,
             "paipu": metadata.get("paipu") or work_dir.name,
             "player_id": metadata.get("player_id"),
             "created_at": created_at,
-            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at)),
+            "created_at_text": created_at_text,
         })
 
     items.sort(key=lambda item: item["created_at"], reverse=True)
@@ -255,6 +346,7 @@ def completed_history_items(limit=5):
 
 
 def history_metadata_for_dir(work_dir):
+    work_dir = Path(work_dir).resolve()
     metadata_path = work_dir / "metadata.json"
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -279,13 +371,29 @@ def history_metadata_for_dir(work_dir):
                 "mapped": "mortal-output-p2-mapped.jsonl",
             },
         }
-    files = metadata.get("files", {})
-    tenhou_path = work_dir / files.get("tenhou", "")
-    mjai_path = work_dir / files.get("mjai", "")
-    mapped_path = work_dir / files.get("mapped", "")
+    tenhou_path, mjai_path, mapped_path = history_paths_for_metadata(work_dir, metadata)
     if not all(path.exists() and path.is_file() and path.stat().st_size > 0 for path in (tenhou_path, mjai_path, mapped_path)):
         raise FileNotFoundError("这条历史复盘缺少结果文件")
     return metadata
+
+
+def history_paths_for_metadata(work_dir, metadata):
+    work_dir = Path(work_dir).resolve()
+    if not isinstance(metadata, dict):
+        raise ValueError("历史复盘元数据必须是 JSON 对象")
+    files = metadata.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("历史复盘元数据缺少 files")
+    paths = []
+    for key in ("tenhou", "mjai", "mapped"):
+        name = files.get(key)
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ValueError("历史复盘文件名无效")
+        path = (work_dir / name).resolve()
+        if work_dir not in path.parents:
+            raise ValueError("历史复盘文件必须位于任务目录")
+        paths.append(path)
+    return tuple(paths)
 
 
 def restore_history(job_id):
@@ -294,10 +402,7 @@ def restore_history(job_id):
         raise FileNotFoundError("找不到这条历史复盘")
 
     metadata = history_metadata_for_dir(work_dir)
-    files = metadata.get("files", {})
-    tenhou_path = work_dir / files.get("tenhou", "")
-    mjai_path = work_dir / files.get("mjai", "")
-    mapped_path = work_dir / files.get("mapped", "")
+    tenhou_path, mjai_path, mapped_path = history_paths_for_metadata(work_dir, metadata)
     copy_outputs(tenhou_path, mjai_path, mapped_path, metadata.get("player_id"))
     return metadata
 
@@ -385,7 +490,7 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
                 "mapped": str(mapped_path),
             },
         )
-    except BaseException as exc:
+    except Exception as exc:
         error_text = f"{type(exc).__name__}: {exc}"
         traceback_text = traceback.format_exc()
         for secret in (username, password):
@@ -399,6 +504,44 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
             error=error_text,
             traceback=traceback_text,
         )
+    finally:
+        prune_finished_jobs()
+
+
+class AnalysisScheduler:
+    def __init__(self, target, max_pending=MAX_PENDING_JOBS):
+        self._target = target
+        self._queue = queue.Queue(maxsize=max_pending)
+        self._start_lock = threading.Lock()
+        self._worker = None
+
+    def submit(self, *args, **kwargs):
+        try:
+            self._queue.put_nowait((args, kwargs))
+        except queue.Full:
+            return False
+        with self._start_lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(
+                    target=self._run,
+                    name="mortal-analysis-worker",
+                    daemon=True,
+                )
+                self._worker.start()
+        return True
+
+    def _run(self):
+        while True:
+            args, kwargs = self._queue.get()
+            try:
+                self._target(*args, **kwargs)
+            except Exception:
+                traceback.print_exc()
+            finally:
+                self._queue.task_done()
+
+
+ANALYSIS_SCHEDULER = AnalysisScheduler(analyze_job)
 
 
 ANALYZER_HTML = """<!doctype html>
@@ -695,6 +838,14 @@ ANALYZER_HTML = """<!doctype html>
       return paipu.length > 34 ? `${paipu.slice(0, 30)}...` : paipu;
     }
 
+    function showHistoryMessage(message) {
+      historyList.replaceChildren();
+      const empty = document.createElement('div');
+      empty.className = 'history-empty';
+      empty.textContent = message;
+      historyList.appendChild(empty);
+    }
+
     function updateFetchModeUi() {
       const tensoulMode = fetchModeSelect.value === 'tensoul';
       startBtn.textContent = '开始分析';
@@ -733,26 +884,36 @@ ANALYZER_HTML = """<!doctype html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (!data.items.length) {
-          historyList.innerHTML = '<div class="history-empty">还没有成功分析过的历史复盘。</div>';
+          showHistoryMessage('还没有成功分析过的历史复盘。');
           return;
         }
-        historyList.innerHTML = '';
+        historyList.replaceChildren();
         for (const item of data.items) {
           const row = document.createElement('div');
           row.className = 'history-item';
-          row.innerHTML = `
-            <span>${shortPaipu(item.paipu)}<small>${item.created_at_text} · 玩家 ${item.player_id}</small></span>
-            <span class="history-actions">
-              <button class="history-action history-open" type="button">打开</button>
-              <button class="history-action history-delete" type="button">删除</button>
-            </span>
-          `;
-          row.querySelector('.history-open').onclick = () => openHistory(item.job_id);
-          row.querySelector('.history-delete').onclick = () => deleteHistory(item.job_id);
+          const summary = document.createElement('span');
+          summary.appendChild(document.createTextNode(shortPaipu(item.paipu)));
+          const details = document.createElement('small');
+          details.textContent = `${item.created_at_text} · 玩家 ${item.player_id}`;
+          summary.appendChild(details);
+          const actions = document.createElement('span');
+          actions.className = 'history-actions';
+          const openButton = document.createElement('button');
+          openButton.className = 'history-action history-open';
+          openButton.type = 'button';
+          openButton.textContent = '打开';
+          openButton.onclick = () => openHistory(item.job_id);
+          const deleteButton = document.createElement('button');
+          deleteButton.className = 'history-action history-delete';
+          deleteButton.type = 'button';
+          deleteButton.textContent = '删除';
+          deleteButton.onclick = () => deleteHistory(item.job_id);
+          actions.append(openButton, deleteButton);
+          row.append(summary, actions);
           historyList.appendChild(row);
         }
       } catch (error) {
-        historyList.innerHTML = `<div class="history-empty">${error.message}</div>`;
+        showHistoryMessage(error.message);
       }
     }
 
@@ -787,22 +948,37 @@ ANALYZER_HTML = """<!doctype html>
       loadHistory();
     }
 
-    async function poll(jobId) {
-      const res = await fetch(`/api/status?job_id=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
-      const job = await res.json();
-      setProgress(job);
-      if (job.status === 'done') {
-        statusBox.textContent = '分析完成，正在打开复盘页。';
-        loadHistory();
-        window.location.href = job.viewer || '/mortal-output-viewer.html';
-        return;
-      }
-      if (job.status === 'error') {
-        statusBox.textContent = job.error || '分析失败';
+    async function poll(jobId, failures = 0) {
+      try {
+        const res = await fetch(`/api/status?job_id=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.error || `HTTP ${res.status}`);
+        setProgress(job);
+        if (job.status === 'done') {
+          statusBox.textContent = '分析完成，正在打开复盘页。';
+          loadHistory();
+          window.location.href = job.viewer || '/mortal-output-viewer.html';
+          return;
+        }
+        if (job.status === 'error') {
+          statusBox.textContent = job.error || '分析失败';
+          startBtn.disabled = false;
+          return;
+        }
+        setTimeout(() => poll(jobId, 0), 1000);
+      } catch (error) {
+        const nextFailures = failures + 1;
+        if (nextFailures <= 5) {
+          const delay = Math.min(1000 * (2 ** (nextFailures - 1)), 5000);
+          statusBox.textContent = `状态连接暂时中断，${Math.ceil(delay / 1000)} 秒后重试...`;
+          detail.textContent = String(error.stack || error);
+          setTimeout(() => poll(jobId, nextFailures), delay);
+          return;
+        }
+        statusBox.textContent = `无法读取任务状态：${error.message}`;
+        detail.textContent = String(error.stack || error);
         startBtn.disabled = false;
-        return;
       }
-      setTimeout(() => poll(jobId), 1000);
     }
 
     startBtn.onclick = async () => {
@@ -825,7 +1001,8 @@ ANALYZER_HTML = """<!doctype html>
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        poll(data.job_id);
+        passwordInput.value = '';
+        poll(data.job_id, 0);
         loadHistory();
       } catch (error) {
         statusBox.textContent = error.message;
@@ -886,10 +1063,16 @@ ANALYZER_HTML = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 10
+    protocol_version = "HTTP/1.1"
+
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -898,11 +1081,83 @@ class Handler(BaseHTTPRequestHandler):
         body = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def read_json_body(self):
+        if self.headers.get_content_type().casefold() != "application/json":
+            self.close_connection = True
+            raise HttpRequestError("Content-Type 必须是 application/json", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            self.close_connection = True
+            raise HttpRequestError("缺少 Content-Length", HTTPStatus.LENGTH_REQUIRED)
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            self.close_connection = True
+            raise HttpRequestError("Content-Length 无效") from exc
+        if length < 0:
+            self.close_connection = True
+            raise HttpRequestError("Content-Length 无效")
+        if length > MAX_REQUEST_BODY_BYTES:
+            self.close_connection = True
+            raise HttpRequestError("请求体过大", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise HttpRequestError("请求体不完整")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HttpRequestError("请求体必须是合法 JSON") from exc
+        if not isinstance(payload, dict):
+            raise HttpRequestError("请求体必须是 JSON 对象")
+        return payload
+
+    def send_exception(self, exc):
+        status = exc.status if isinstance(exc, HttpRequestError) else HTTPStatus.BAD_REQUEST
+        self.send_json({"error": str(exc)}, status)
+
+    def request_host_is_allowed(self):
+        try:
+            parsed = urllib.parse.urlsplit("//" + self.headers.get("Host", ""))
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            return False
+        local_host, local_port = self.connection.getsockname()[:2]
+        allowed_hosts = {"localhost", "127.0.0.1", "::1", str(local_host).casefold().split("%", 1)[0]}
+        return host in allowed_hosts and (port is None or port == local_port)
+
+    def request_origin_is_allowed(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        try:
+            parsed_origin = urllib.parse.urlsplit(origin)
+            parsed_host = urllib.parse.urlsplit("//" + self.headers.get("Host", ""))
+            origin_host = (parsed_origin.hostname or "").casefold().rstrip(".")
+            request_host = (parsed_host.hostname or "").casefold().rstrip(".")
+            local_port = self.connection.getsockname()[1]
+            origin_port = parsed_origin.port or 80
+            request_port = parsed_host.port or local_port
+        except ValueError:
+            return False
+        return parsed_origin.scheme == "http" and origin_host == request_host and origin_port == request_port
+
+    def reject_untrusted_request(self, include_origin=False):
+        if not self.request_host_is_allowed() or (include_origin and not self.request_origin_is_allowed()):
+            if include_origin:
+                self.close_connection = True
+            self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+            return True
+        return False
+
     def do_GET(self):
+        if self.reject_untrusted_request():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/paipu-analyzer.html"):
             self.send_text(ANALYZER_HTML)
@@ -911,16 +1166,22 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             job_id = qs.get("job_id", [""])[0]
             with JOBS_LOCK:
-                job = JOBS.get(job_id)
+                stored_job = JOBS.get(job_id)
+                job = stored_job.copy() if stored_job else None
             if not job:
                 self.send_json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
                 return
             self.send_json(job)
             return
         if parsed.path == "/api/history":
-            qs = urllib.parse.parse_qs(parsed.query)
-            limit = int(qs.get("limit", ["5"])[0])
-            self.send_json({"items": completed_history_items(limit)})
+            try:
+                qs = urllib.parse.parse_qs(parsed.query)
+                limit = int(qs.get("limit", ["5"])[0])
+                items = completed_history_items(limit)
+            except (TypeError, ValueError):
+                self.send_exception(HttpRequestError("limit 必须是整数"))
+                return
+            self.send_json({"items": items})
             return
         if parsed.path == "/api/models":
             self.send_json({"models": available_model_names(), "default": DEFAULT_MODEL_NAME})
@@ -929,51 +1190,64 @@ class Handler(BaseHTTPRequestHandler):
         if static_path_is_private(parsed.path):
             self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
             return
-        file_path = (ROOT / parsed.path.lstrip("/")).resolve()
-        if ROOT not in file_path.parents and file_path != ROOT:
+        if not static_path_is_public(parsed.path):
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        root = ROOT.resolve()
+        file_path = (root / parsed.path.lstrip("/")).resolve()
+        if root not in file_path.parents and file_path != root:
             self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
             return
         if not file_path.exists() or not file_path.is_file():
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
-        content_type = "text/html; charset=utf-8" if file_path.suffix == ".html" else "application/octet-stream"
-        data = file_path.read_bytes()
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in ("application/javascript", "application/json"):
+            content_type += "; charset=utf-8"
+        size = file_path.stat().st_size
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        parts = tuple(part.casefold() for part in Path(parsed.path.lstrip("/")).parts)
+        if len(parts) >= 2 and parts[:2] == ("log-viewer", "files"):
+            self.send_header("Cache-Control", "public, max-age=86400")
+        else:
+            self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(size))
         self.end_headers()
-        self.wfile.write(data)
+        with file_path.open("rb") as source:
+            shutil.copyfileobj(source, self.wfile, length=64 * 1024)
 
     def do_POST(self):
+        if self.reject_untrusted_request(include_origin=True):
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/use-history":
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = self.read_json_body()
                 metadata = restore_history(str(payload.get("job_id") or ""))
             except Exception as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self.send_exception(exc)
                 return
             self.send_json({"viewer": "/mortal-output-viewer.html", "history": metadata})
             return
 
         if parsed.path == "/api/delete-history":
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = self.read_json_body()
                 metadata = delete_history(str(payload.get("job_id") or ""))
             except Exception as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self.send_exception(exc)
                 return
             self.send_json({"deleted": True, "history": metadata})
             return
 
         if parsed.path != "/api/analyze":
+            self.close_connection = True
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = self.read_json_body()
             url = str(payload.get("url") or "")
             player_id = payload.get("player_id", "auto")
             player_name = str(payload.get("player_name") or "")
@@ -984,13 +1258,15 @@ class Handler(BaseHTTPRequestHandler):
             if fetch_method not in ("remote", "tensoul"):
                 raise ValueError("fetch_method 必须是 remote 或 tensoul")
             resolve_model_path(model_name)
+            if isinstance(player_id, bool):
+                raise ValueError("player_id 必须是 0-3")
             if str(player_id) != "auto":
                 player_id = int(player_id)
                 if player_id not in (0, 1, 2, 3):
                     raise ValueError("player_id 必须是 0-3")
             extract_paipu(url)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self.send_exception(exc)
             return
 
         job_id = uuid4().hex
@@ -1003,15 +1279,34 @@ class Handler(BaseHTTPRequestHandler):
                 "created_at": time.time(),
                 "updated_at": time.time(),
             }
-        thread = threading.Thread(
-            target=analyze_job,
-            args=(job_id, url, player_id, username, password, player_name, fetch_method, model_name),
-            daemon=True,
+        submitted = ANALYSIS_SCHEDULER.submit(
+            job_id,
+            url,
+            player_id,
+            username,
+            password,
+            player_name,
+            fetch_method,
+            model_name,
         )
-        thread.start()
+        if not submitted:
+            with JOBS_LOCK:
+                JOBS.pop(job_id, None)
+            self.send_json({"error": "等待分析的任务过多，请稍后重试。"}, HTTPStatus.TOO_MANY_REQUESTS)
+            return
         self.send_json({"job_id": job_id})
 
     def log_message(self, fmt, *args):
+        if fmt.startswith("Request timed out:"):
+            return
+        if len(args) >= 2:
+            request_line = str(args[0])
+            try:
+                status = int(args[1])
+            except (TypeError, ValueError):
+                status = 0
+            if request_line.startswith("GET ") and 200 <= status < 400:
+                return
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
 
@@ -1022,7 +1317,12 @@ def main():
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"open http://{args.host}:{args.port}/paipu-analyzer.html", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("server stopped", flush=True)
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

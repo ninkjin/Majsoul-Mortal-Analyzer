@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 try:
     import torch
@@ -13,6 +14,9 @@ try:
 except ModuleNotFoundError:
     torch = None
     np = None
+
+
+REVIEWER_TIMEOUT_SECONDS = 120
 
 
 def parse_majsoul_paipu_url(url):
@@ -151,8 +155,8 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
             raise RuntimeError('连接雀魂网关超时，请稍后重试或检查网络/代理。') from exc
 
     downloader._connect = connect_with_current_config
-    await asyncio.wait_for(downloader.start(), timeout=90)
     try:
+        await asyncio.wait_for(downloader.start(), timeout=90)
         print('logging in...', file=sys.stderr, flush=True)
         await asyncio.wait_for(downloader.login(username, password), timeout=30)
         print(f'downloading record {record_uuid}...', file=sys.stderr, flush=True)
@@ -162,10 +166,15 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
 
     out_path = Path(out_file)
     print(f'writing tenhou log: {out_path}', file=sys.stderr, flush=True)
-    out_path.write_text(
-        json.dumps(log, ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = out_path.with_name(f'.{out_path.name}.{uuid4().hex}.tmp')
+    try:
+        with temporary.open('w', encoding='utf-8') as output:
+            json.dump(log, output, ensure_ascii=False, indent=2)
+        temporary.replace(out_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return out_path
 
 
@@ -182,19 +191,30 @@ def tenhou_log_to_mjai_log(in_file, out_file, player_id=0, reviewer_exe=None):
 
     out_path = Path(out_file)
     print(f'converting to mjai log: {out_path}', file=sys.stderr, flush=True)
-    subprocess.run(
-        [
-            str(reviewer_exe),
-            '--no-review',
-            '--in-file',
-            str(in_file),
-            '--player-id',
-            str(player_id),
-            '--mjai-out',
-            str(out_path),
-        ],
-        check=True,
-    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = out_path.with_name(f'.{out_path.name}.{uuid4().hex}.tmp')
+    try:
+        try:
+            subprocess.run(
+                [
+                    str(reviewer_exe),
+                    '--no-review',
+                    '--in-file',
+                    str(in_file),
+                    '--player-id',
+                    str(player_id),
+                    '--mjai-out',
+                    str(temporary),
+                ],
+                check=True,
+                timeout=REVIEWER_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError('牌谱转换超时，请检查输入牌谱是否完整。') from exc
+        temporary.replace(out_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return out_path
 
 

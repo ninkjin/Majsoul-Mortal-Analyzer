@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 import urllib.error
@@ -17,6 +18,19 @@ MAX_METADATA_BYTES = 1024 * 1024
 MAX_RESULT_BYTES = 64 * 1024 * 1024
 PENDING_STATES = {"queued", "fetching", "retry_wait", "converting"}
 NETWORK_RETRY_DELAYS = (1, 2, 5)
+RETRYABLE_HTTP_STATUSES = {408, 425, 429}
+DEFAULT_REQUEST_TIMEOUT = 20
+MAX_RETRY_AFTER_SECONDS = 30
+MAX_ERROR_TEXT_CHARS = 300
+WAIT_TIMEOUT_MESSAGE = "等待远程牌谱服务超时，请稍后重试。"
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_REMOTE_OPENER = urllib.request.build_opener(NoRedirectHandler())
 
 
 class RemoteServiceError(RuntimeError):
@@ -25,6 +39,10 @@ class RemoteServiceError(RuntimeError):
 
 class RemoteServiceConnectionError(RemoteServiceError):
     """A temporary network failure that can be retried safely."""
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -80,13 +98,38 @@ def _read_limited(response, limit):
     return payload
 
 
+def _retry_after_seconds(headers):
+    try:
+        value = float(headers.get("Retry-After", ""))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return min(value, MAX_RETRY_AFTER_SECONDS)
+
+
+def _service_text(value, limit=MAX_ERROR_TEXT_CHARS):
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+def _redact_secret(value, secret):
+    return value.replace(secret, "***") if secret else value
+
+
+def _open_url(request, timeout):
+    return _REMOTE_OPENER.open(request, timeout=timeout)
+
+
 def _safe_error_message(status, payload):
     if status == 401:
         return "远程牌谱服务 API Key 无效或已被撤销。"
     error = payload.get("error") if isinstance(payload, dict) else None
     if isinstance(error, dict):
-        code = str(error.get("code") or "").strip()
-        message = str(error.get("message") or "").strip()
+        code = _service_text(error.get("code"), 80)
+        message = _service_text(error.get("message"))
         if code and message:
             return f"远程牌谱服务返回 {code}：{message}"
         if code:
@@ -95,7 +138,7 @@ def _safe_error_message(status, payload):
             return f"远程牌谱服务请求失败：{message}"
     detail = payload.get("detail") if isinstance(payload, dict) else None
     if isinstance(detail, str) and detail:
-        return f"远程牌谱服务请求失败（HTTP {status}）：{detail}"
+        return f"远程牌谱服务请求失败（HTTP {status}）：{_service_text(detail)}"
     return f"远程牌谱服务请求失败：HTTP {status}"
 
 
@@ -105,7 +148,7 @@ def _request_json(
     *,
     method="GET",
     body=None,
-    timeout=20,
+    timeout=DEFAULT_REQUEST_TIMEOUT,
     max_bytes=MAX_METADATA_BYTES,
     extra_headers=None,
 ):
@@ -122,7 +165,7 @@ def _request_json(
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_url(request, timeout) as response:
             raw = _read_limited(response, max_bytes)
     except urllib.error.HTTPError as exc:
         try:
@@ -130,9 +173,9 @@ def _request_json(
             error_payload = json.loads(error_raw.decode("utf-8"))
         except (RemoteServiceError, UnicodeDecodeError, json.JSONDecodeError):
             error_payload = {}
-        message = _safe_error_message(exc.code, error_payload)
-        if exc.code >= 500:
-            raise RemoteServiceConnectionError(message) from None
+        message = _redact_secret(_safe_error_message(exc.code, error_payload), api_key)
+        if exc.code in RETRYABLE_HTTP_STATUSES or exc.code >= 500:
+            raise RemoteServiceConnectionError(message, _retry_after_seconds(exc.headers)) from None
         raise RemoteServiceError(message) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", None)
@@ -159,15 +202,26 @@ def _request_json_with_retries(
     deadline=None,
     **kwargs,
 ):
+    request_timeout = float(kwargs.get("timeout", DEFAULT_REQUEST_TIMEOUT))
     for attempt in range(len(NETWORK_RETRY_DELAYS) + 1):
+        request_kwargs = dict(kwargs)
+        if deadline is not None:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise RemoteServiceError(WAIT_TIMEOUT_MESSAGE)
+            request_kwargs["timeout"] = min(request_timeout, max(0.001, remaining))
         try:
-            return _request_json(url, api_key, **kwargs)
-        except RemoteServiceConnectionError:
+            return _request_json(url, api_key, **request_kwargs)
+        except RemoteServiceConnectionError as exc:
+            if deadline is not None:
+                remaining = deadline - clock()
+                if remaining <= 0:
+                    raise RemoteServiceError(WAIT_TIMEOUT_MESSAGE) from None
             if attempt >= len(NETWORK_RETRY_DELAYS):
                 raise
-            delay = NETWORK_RETRY_DELAYS[attempt]
-            if deadline is not None and clock() + delay >= deadline:
-                raise
+            delay = exc.retry_after if exc.retry_after is not None else NETWORK_RETRY_DELAYS[attempt]
+            if deadline is not None and delay >= remaining:
+                raise RemoteServiceError(WAIT_TIMEOUT_MESSAGE) from None
             sleep(delay)
     raise AssertionError("unreachable")
 
@@ -183,8 +237,8 @@ def _poll_delay(payload):
 def _raise_terminal_error(payload):
     error = payload.get("error")
     if isinstance(error, dict):
-        code = str(error.get("code") or "RECORD_UNAVAILABLE")
-        message = str(error.get("message") or "牌谱获取失败")
+        code = _service_text(error.get("code") or "RECORD_UNAVAILABLE", 80)
+        message = _service_text(error.get("message") or "牌谱获取失败")
         raise RemoteServiceError(f"远程牌谱服务返回 {code}：{message}")
     raise RemoteServiceError("远程牌谱服务未能获取这条牌谱。")
 
@@ -195,7 +249,7 @@ def _validate_result(result):
     if "ver" not in result:
         raise RemoteServiceError("远程牌谱服务返回的 Tenhou JSON 缺少 ver。")
     target_actor = result.get("_target_actor")
-    if target_actor is not None and (not isinstance(target_actor, int) or target_actor not in (0, 1, 2, 3)):
+    if target_actor is not None and (type(target_actor) is not int or target_actor not in (0, 1, 2, 3)):
         raise RemoteServiceError("远程牌谱服务返回的目标玩家位置无效。")
 
 
@@ -209,7 +263,13 @@ def fetch_remote_tenhou(
     clock: Callable[[], float] = time.monotonic,
 ):
     config = load_remote_service_config()
-    deadline = clock() + max(1, float(max_wait_seconds))
+    try:
+        wait_seconds = float(max_wait_seconds)
+    except (TypeError, ValueError) as exc:
+        raise RemoteServiceError("远程牌谱服务等待时间无效。") from exc
+    if not math.isfinite(wait_seconds) or wait_seconds <= 0:
+        raise RemoteServiceError("远程牌谱服务等待时间无效。")
+    deadline = clock() + max(1, wait_seconds)
     idempotency_key = str(uuid4())
     create_url = f"{config.service_url}/api/v1/client/requests"
     payload = _request_json_with_retries(
@@ -225,6 +285,8 @@ def fetch_remote_tenhou(
     request_id = str(payload.get("request_id") or "").strip()
     if not request_id:
         raise RemoteServiceError("远程牌谱服务没有返回 request_id。")
+    if len(request_id) > 256:
+        raise RemoteServiceError("远程牌谱服务返回的 request_id 过长。")
 
     while True:
         state = str(payload.get("status") or "").strip()
@@ -235,10 +297,13 @@ def fetch_remote_tenhou(
         if state in ("failed", "expired"):
             _raise_terminal_error(payload)
         if state not in PENDING_STATES:
-            raise RemoteServiceError(f"远程牌谱服务返回了未知状态：{state or 'empty'}")
+            raise RemoteServiceError(f"远程牌谱服务返回了未知状态：{_service_text(state, 80) or 'empty'}")
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise RemoteServiceError(WAIT_TIMEOUT_MESSAGE)
+        sleep(min(_poll_delay(payload), remaining))
         if clock() >= deadline:
-            raise RemoteServiceError("等待远程牌谱服务超时，请稍后重试。")
-        sleep(_poll_delay(payload))
+            raise RemoteServiceError(WAIT_TIMEOUT_MESSAGE)
         status_url = f"{config.service_url}/api/v1/requests/{urllib.parse.quote(request_id, safe='')}"
         payload = _request_json_with_retries(
             status_url,
@@ -264,10 +329,8 @@ def fetch_remote_tenhou(
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     try:
-        temporary.write_text(
-            json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2),
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8") as output:
+            json.dump(result, output, ensure_ascii=False, allow_nan=False, indent=2)
         temporary.replace(path)
     finally:
         if temporary.exists():
