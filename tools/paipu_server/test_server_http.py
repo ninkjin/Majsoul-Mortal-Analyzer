@@ -20,6 +20,9 @@ class ServerHttpTest(unittest.TestCase):
         (self.root / ".git" / "config").write_text("private", encoding="utf-8")
         (self.root / "paipu-service.local.json").write_text('{"api_key":"private"}', encoding="utf-8")
         (self.root / "mortal-output-viewer.html").write_text("viewer", encoding="utf-8")
+        asset_dir = self.root / "log-viewer" / "files" / "images"
+        asset_dir.mkdir(parents=True)
+        (asset_dir / "blank.png").write_bytes(b"image")
         (self.root / "mj_model").mkdir()
         (self.root / "mj_model" / "mortal.pth").write_bytes(b"model")
         self.root_patch = patch.object(server, "ROOT", self.root)
@@ -55,6 +58,19 @@ class ServerHttpTest(unittest.TestCase):
 
         status, _ = self.request("GET", "/mj_model/mortal.pth")
         self.assertEqual(status, 404)
+
+    def test_static_assets_are_cached_but_viewer_html_is_not(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=2)
+        connection.request("GET", "/log-viewer/files/images/blank.png")
+        asset_response = connection.getresponse()
+        asset_response.read()
+        self.assertEqual(asset_response.version, 11)
+        self.assertEqual(asset_response.getheader("Cache-Control"), "public, max-age=86400")
+        connection.request("GET", "/mortal-output-viewer.html")
+        viewer_response = connection.getresponse()
+        viewer_response.read()
+        self.assertEqual(viewer_response.getheader("Cache-Control"), "no-store")
+        connection.close()
 
     def test_invalid_history_limit_returns_json_error(self):
         status, payload = self.request("GET", "/api/history?limit=bad")

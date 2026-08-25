@@ -1027,12 +1027,15 @@ ANALYZER_HTML = """<!doctype html>
 
 class Handler(BaseHTTPRequestHandler):
     timeout = 30
+    protocol_version = "HTTP/1.1"
 
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1048,15 +1051,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_json_body(self):
         if self.headers.get_content_type().casefold() != "application/json":
+            self.close_connection = True
             raise HttpRequestError("Content-Type 必须是 application/json", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
+            self.close_connection = True
             raise HttpRequestError("缺少 Content-Length", HTTPStatus.LENGTH_REQUIRED)
         try:
             length = int(raw_length)
         except ValueError as exc:
+            self.close_connection = True
             raise HttpRequestError("Content-Length 无效") from exc
         if length < 0:
+            self.close_connection = True
             raise HttpRequestError("Content-Length 无效")
         if length > MAX_REQUEST_BODY_BYTES:
             self.close_connection = True
@@ -1105,6 +1112,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def reject_untrusted_request(self, include_origin=False):
         if not self.request_host_is_allowed() or (include_origin and not self.request_origin_is_allowed()):
+            if include_origin:
+                self.close_connection = True
             self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
             return True
         return False
@@ -1163,7 +1172,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("X-Content-Type-Options", "nosniff")
         parts = tuple(part.casefold() for part in Path(parsed.path.lstrip("/")).parts)
-        if parts and parts[0] == "viewer-data":
+        if len(parts) >= 2 and parts[:2] == ("log-viewer", "files"):
+            self.send_header("Cache-Control", "public, max-age=86400")
+        else:
             self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(size))
         self.end_headers()
@@ -1195,6 +1206,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path != "/api/analyze":
+            self.close_connection = True
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
