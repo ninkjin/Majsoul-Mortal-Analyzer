@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -29,10 +30,24 @@ LEGACY_CURRENT_OUTPUT_NAMES = (
     "mortal-viewer-config.json",
 )
 HISTORY_KEEP = 20
+MAX_REQUEST_BODY_BYTES = 64 * 1024
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 _REWARD_CALCULATOR_MODULE = None
 PRIVATE_STATIC_FILES = {".env", "paipu-service.local.json"}
+PUBLIC_STATIC_FILES = {"majsoul-paipu-fetcher.html", "mortal-output-viewer.html"}
+PUBLIC_VIEWER_FILES = {
+    "log.json",
+    "majsoul-tenhou-current.json",
+    "mortal-output-p2-mapped.jsonl",
+    "mortal-viewer-config.json",
+}
+
+
+class HttpRequestError(ValueError):
+    def __init__(self, message, status=HTTPStatus.BAD_REQUEST):
+        super().__init__(message)
+        self.status = status
 
 
 def extract_paipu(value):
@@ -47,8 +62,19 @@ def safe_name(value):
 
 
 def static_path_is_private(request_path):
-    parts = Path(urllib.parse.unquote(request_path).lstrip("/")).parts
+    parts = (part.casefold() for part in Path(urllib.parse.unquote(request_path).lstrip("/")).parts)
     return any(part in PRIVATE_STATIC_FILES or part == ".git" for part in parts)
+
+
+def static_path_is_public(request_path):
+    parts = tuple(part.casefold() for part in Path(urllib.parse.unquote(request_path).lstrip("/")).parts)
+    if ".." in parts:
+        return False
+    if len(parts) == 1:
+        return parts[0] in PUBLIC_STATIC_FILES
+    if len(parts) == 2 and parts[0] == "viewer-data":
+        return parts[1] in PUBLIC_VIEWER_FILES
+    return len(parts) >= 3 and parts[:2] == ("log-viewer", "files")
 
 
 def available_model_names():
@@ -886,10 +912,13 @@ ANALYZER_HTML = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30
+
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -898,9 +927,38 @@ class Handler(BaseHTTPRequestHandler):
         body = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def read_json_body(self):
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise HttpRequestError("缺少 Content-Length", HTTPStatus.LENGTH_REQUIRED)
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise HttpRequestError("Content-Length 无效") from exc
+        if length < 0:
+            raise HttpRequestError("Content-Length 无效")
+        if length > MAX_REQUEST_BODY_BYTES:
+            self.close_connection = True
+            raise HttpRequestError("请求体过大", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise HttpRequestError("请求体不完整")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HttpRequestError("请求体必须是合法 JSON") from exc
+        if not isinstance(payload, dict):
+            raise HttpRequestError("请求体必须是 JSON 对象")
+        return payload
+
+    def send_exception(self, exc):
+        status = exc.status if isinstance(exc, HttpRequestError) else HTTPStatus.BAD_REQUEST
+        self.send_json({"error": str(exc)}, status)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -911,16 +969,22 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             job_id = qs.get("job_id", [""])[0]
             with JOBS_LOCK:
-                job = JOBS.get(job_id)
+                stored_job = JOBS.get(job_id)
+                job = stored_job.copy() if stored_job else None
             if not job:
                 self.send_json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
                 return
             self.send_json(job)
             return
         if parsed.path == "/api/history":
-            qs = urllib.parse.parse_qs(parsed.query)
-            limit = int(qs.get("limit", ["5"])[0])
-            self.send_json({"items": completed_history_items(limit)})
+            try:
+                qs = urllib.parse.parse_qs(parsed.query)
+                limit = int(qs.get("limit", ["5"])[0])
+                items = completed_history_items(limit)
+            except (TypeError, ValueError):
+                self.send_exception(HttpRequestError("limit 必须是整数"))
+                return
+            self.send_json({"items": items})
             return
         if parsed.path == "/api/models":
             self.send_json({"models": available_model_names(), "default": DEFAULT_MODEL_NAME})
@@ -929,41 +993,50 @@ class Handler(BaseHTTPRequestHandler):
         if static_path_is_private(parsed.path):
             self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
             return
-        file_path = (ROOT / parsed.path.lstrip("/")).resolve()
-        if ROOT not in file_path.parents and file_path != ROOT:
+        if not static_path_is_public(parsed.path):
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        root = ROOT.resolve()
+        file_path = (root / parsed.path.lstrip("/")).resolve()
+        if root not in file_path.parents and file_path != root:
             self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
             return
         if not file_path.exists() or not file_path.is_file():
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
-        content_type = "text/html; charset=utf-8" if file_path.suffix == ".html" else "application/octet-stream"
-        data = file_path.read_bytes()
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in ("application/javascript", "application/json"):
+            content_type += "; charset=utf-8"
+        size = file_path.stat().st_size
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        parts = tuple(part.casefold() for part in Path(parsed.path.lstrip("/")).parts)
+        if parts and parts[0] == "viewer-data":
+            self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(size))
         self.end_headers()
-        self.wfile.write(data)
+        with file_path.open("rb") as source:
+            shutil.copyfileobj(source, self.wfile, length=64 * 1024)
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/use-history":
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = self.read_json_body()
                 metadata = restore_history(str(payload.get("job_id") or ""))
             except Exception as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self.send_exception(exc)
                 return
             self.send_json({"viewer": "/mortal-output-viewer.html", "history": metadata})
             return
 
         if parsed.path == "/api/delete-history":
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = self.read_json_body()
                 metadata = delete_history(str(payload.get("job_id") or ""))
             except Exception as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self.send_exception(exc)
                 return
             self.send_json({"deleted": True, "history": metadata})
             return
@@ -972,8 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = self.read_json_body()
             url = str(payload.get("url") or "")
             player_id = payload.get("player_id", "auto")
             player_name = str(payload.get("player_name") or "")
@@ -990,7 +1062,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("player_id 必须是 0-3")
             extract_paipu(url)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self.send_exception(exc)
             return
 
         job_id = uuid4().hex
