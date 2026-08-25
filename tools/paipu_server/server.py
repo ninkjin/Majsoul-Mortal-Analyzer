@@ -1063,7 +1063,7 @@ ANALYZER_HTML = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    timeout = 30
+    timeout = 10
     protocol_version = "HTTP/1.1"
 
     def send_json(self, payload, status=HTTPStatus.OK):
@@ -1297,6 +1297,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"job_id": job_id})
 
     def log_message(self, fmt, *args):
+        if fmt.startswith("Request timed out:"):
+            return
         if len(args) >= 2:
             request_line = str(args[0])
             try:
@@ -1315,7 +1317,12 @@ def main():
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"open http://{args.host}:{args.port}/paipu-analyzer.html", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("server stopped", flush=True)
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

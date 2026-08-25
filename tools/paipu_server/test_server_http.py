@@ -115,9 +115,11 @@ class ServerHttpTest(unittest.TestCase):
         self.assertIn("application/json", json.loads(payload)["error"])
 
     def test_request_log_suppresses_successful_get_noise_only(self):
+        self.assertEqual(server.Handler.timeout, 10)
         handler = object.__new__(server.Handler)
         output = StringIO()
         with patch("sys.stderr", output):
+            handler.log_message("Request timed out: %r", TimeoutError("idle connection"))
             handler.log_message('"%s" %s %s', "GET /api/status?job_id=x HTTP/1.1", "200", "-")
             self.assertEqual(output.getvalue(), "")
             handler.log_message('"%s" %s %s', "GET /api/status?job_id=x HTTP/1.1", "404", "-")
