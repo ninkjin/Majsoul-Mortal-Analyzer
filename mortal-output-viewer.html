@@ -64,6 +64,8 @@
       border-radius: 4px;
       padding: 0 10px;
       cursor: pointer;
+      white-space: nowrap;
+      flex: 0 0 auto;
     }
 
     .tool-btn:hover {
@@ -86,7 +88,7 @@
 
     .layout {
       display: grid;
-      grid-template-columns: 280px minmax(620px, 1fr) 390px;
+      grid-template-columns: 240px minmax(600px, 1fr) 340px;
       gap: 10px;
       padding: 10px;
       min-height: calc(100vh - 46px);
@@ -745,9 +747,22 @@
       font-weight: 800;
     }
 
-    @media (max-width: 1180px) {
+    @media (max-width: 1450px) {
+      .toolbar {
+        gap: 4px;
+      }
+      .tool-btn, .tool-select {
+        padding-inline: 7px;
+        font-size: 12px;
+      }
+      .status {
+        display: none;
+      }
+    }
+
+    @media (max-width: 1220px) {
       .layout {
-        grid-template-columns: 250px minmax(520px, 1fr);
+        grid-template-columns: 240px minmax(520px, 1fr);
       }
       .right {
         grid-column: 1 / -1;
