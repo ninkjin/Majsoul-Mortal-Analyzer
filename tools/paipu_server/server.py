@@ -260,17 +260,17 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
 
     account_id = account_id_from_paipu(paipu)
     if account_id is not None:
-        seat = player_seat_by_account_id(source_path, account_id)
+        seat = player_seat_by_account_id(source_data, account_id)
         if seat is not None:
             return seat
-        if tenhou_source_has_player_names(source_path):
+        if tenhou_source_has_player_names(source_data):
             return 0
 
     target = str(player_name or "").strip()
     if not target:
         raise ValueError("无法从分享链接识别默认视角，请手动选择玩家 ID")
 
-    names = player_names_from_source(source_path)
+    names = player_names_from_source(source_data)
     lowered = target.casefold()
     for seat, name in enumerate(names):
         if str(name).strip().casefold() == lowered:
@@ -281,22 +281,28 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
     raise ValueError(f"没有在牌谱玩家里找到昵称：{target}")
 
 
-def tenhou_source_has_player_names(source_path):
-    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+def load_source_data(source):
+    if isinstance(source, dict):
+        return source
+    return json.loads(Path(source).read_text(encoding="utf-8-sig"))
+
+
+def tenhou_source_has_player_names(source):
+    data = load_source_data(source)
     names = data.get("name") or []
     return len(names) >= 4
 
 
-def player_seat_by_account_id(source_path, account_id):
-    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+def player_seat_by_account_id(source, account_id):
+    data = load_source_data(source)
     for account in data.get("Game", {}).get("accounts", []):
         if int(account.get("accountId", -1)) == int(account_id):
             return int(account.get("seat", 0))
     return None
 
 
-def player_names_from_source(source_path):
-    data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
+def player_names_from_source(source):
+    data = load_source_data(source)
     if "Game" in data:
         names = [str(i) for i in range(4)]
         for account in data["Game"].get("accounts", []):
