@@ -34,6 +34,8 @@ LEGACY_CURRENT_OUTPUT_NAMES = (
 HISTORY_KEEP = 20
 JOB_STATUS_KEEP = 100
 MAX_PENDING_JOBS = 10
+MAX_PAIPU_CHARS = 512
+MAX_SAFE_NAME_CHARS = 120
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -59,11 +61,17 @@ def extract_paipu(value):
     match = re.search(r"[?&]paipu=([^&#\s]+)", value or "") or re.search(r"^paipu=([^&#\s]+)", value or "")
     if not match:
         raise ValueError("没有找到 paipu 参数")
-    return urllib.parse.unquote(match.group(1))
+    paipu = urllib.parse.unquote(match.group(1))
+    if len(paipu) > MAX_PAIPU_CHARS:
+        raise ValueError("paipu 参数过长")
+    if any(ord(character) < 32 for character in paipu):
+        raise ValueError("paipu 参数包含控制字符")
+    return paipu
 
 
 def safe_name(value):
-    return re.sub(r"[^0-9A-Za-z_.-]+", "_", value).strip("_") or "paipu"
+    name = re.sub(r"[^0-9A-Za-z_.-]+", "_", value).strip("_")[:MAX_SAFE_NAME_CHARS]
+    return name or "paipu"
 
 
 def static_path_is_private(request_path):
@@ -237,6 +245,8 @@ def write_history_metadata(job_id, work_dir, url, paipu, player_id, tenhou_path,
 
 
 def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""):
+    if isinstance(requested_player_id, bool):
+        raise ValueError("player_id 必须是 0-3")
     if str(requested_player_id) != "auto":
         player_id = int(requested_player_id)
         if player_id not in (0, 1, 2, 3):
@@ -245,7 +255,7 @@ def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""
 
     source_data = json.loads(Path(source_path).read_text(encoding="utf-8-sig"))
     target_actor = source_data.get("_target_actor")
-    if isinstance(target_actor, int) and target_actor in (0, 1, 2, 3):
+    if type(target_actor) is int and target_actor in (0, 1, 2, 3):
         return target_actor
 
     account_id = account_id_from_paipu(paipu)
@@ -1242,6 +1252,8 @@ class Handler(BaseHTTPRequestHandler):
             if fetch_method not in ("remote", "tensoul"):
                 raise ValueError("fetch_method 必须是 remote 或 tensoul")
             resolve_model_path(model_name)
+            if isinstance(player_id, bool):
+                raise ValueError("player_id 必须是 0-3")
             if str(player_id) != "auto":
                 player_id = int(player_id)
                 if player_id not in (0, 1, 2, 3):

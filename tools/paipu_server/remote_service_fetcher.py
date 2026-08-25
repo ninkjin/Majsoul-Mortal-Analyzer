@@ -245,7 +245,7 @@ def _validate_result(result):
     if "ver" not in result:
         raise RemoteServiceError("远程牌谱服务返回的 Tenhou JSON 缺少 ver。")
     target_actor = result.get("_target_actor")
-    if target_actor is not None and (not isinstance(target_actor, int) or target_actor not in (0, 1, 2, 3)):
+    if target_actor is not None and (type(target_actor) is not int or target_actor not in (0, 1, 2, 3)):
         raise RemoteServiceError("远程牌谱服务返回的目标玩家位置无效。")
 
 

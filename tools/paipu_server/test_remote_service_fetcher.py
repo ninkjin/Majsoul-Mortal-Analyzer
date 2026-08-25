@@ -102,6 +102,15 @@ class RemoteServiceFetchTest(unittest.TestCase):
         self.assertIn("Idempotency-Key", calls[0][2]["extra_headers"])
         self.assertTrue(calls[-1][0].endswith("/request-1/result"))
 
+    def test_result_rejects_boolean_target_actor(self):
+        with self.assertRaisesRegex(remote.RemoteServiceError, "目标玩家位置无效"):
+            remote._validate_result({
+                "ver": "2.3",
+                "name": ["a", "b", "c", "d"],
+                "log": [],
+                "_target_actor": True,
+            })
+
     def test_failed_status_surfaces_safe_service_error(self):
         responses = [
             {"request_id": "request-1", "status": "queued", "poll_after_ms": 1},
