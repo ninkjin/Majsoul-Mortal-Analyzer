@@ -106,6 +106,55 @@ class HistoryDeleteTest(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     server.delete_history("../outside")
 
+    def test_restore_history_rejects_result_paths_outside_job_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs = root / "jobs"
+            job = jobs / "abc123"
+            job.mkdir(parents=True)
+            (root / "secret.json").write_text("secret", encoding="utf-8")
+            (job / "log.json").write_text("mjai", encoding="utf-8")
+            (job / "mapped.jsonl").write_text("mapped", encoding="utf-8")
+            (job / "metadata.json").write_text(
+                json.dumps({
+                    "job_id": "abc123",
+                    "files": {
+                        "tenhou": "../../secret.json",
+                        "mjai": "log.json",
+                        "mapped": "mapped.jsonl",
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            with patch.object(server, "PAIPU_JOBS_DIR", jobs):
+                with self.assertRaisesRegex(ValueError, "文件名无效"):
+                    server.restore_history("abc123")
+
+    def test_history_list_skips_corrupt_metadata_and_invalid_timestamps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = Path(tmp) / "jobs"
+
+            def write_job(name, metadata):
+                job = jobs / name
+                job.mkdir(parents=True)
+                (job / "source.json").write_text("source", encoding="utf-8")
+                (job / "log.json").write_text("mjai", encoding="utf-8")
+                (job / "mapped.jsonl").write_text("mapped", encoding="utf-8")
+                (job / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+            files = {"tenhou": "source.json", "mjai": "log.json", "mapped": "mapped.jsonl"}
+            write_job("valid", {"job_id": "valid", "created_at": 100, "files": files})
+            write_job("bad-time", {"job_id": "bad-time", "created_at": "not-a-time", "files": files})
+            broken = jobs / "broken"
+            broken.mkdir(parents=True)
+            (broken / "metadata.json").write_text("[]", encoding="utf-8")
+
+            with patch.object(server, "PAIPU_JOBS_DIR", jobs):
+                items = server.completed_history_items(limit=5)
+
+            self.assertEqual([item["job_id"] for item in items], ["valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

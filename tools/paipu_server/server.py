@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import math
 import mimetypes
 import os
 import queue
@@ -221,10 +222,17 @@ def write_history_metadata(job_id, work_dir, url, paipu, player_id, tenhou_path,
             "mapped": mapped_path.name,
         },
     }
-    (work_dir / "metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    metadata_path = work_dir / "metadata.json"
+    temporary = metadata_path.with_name(f".{metadata_path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(metadata_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def resolve_player_id(source_path, requested_player_id, player_name="", paipu=""):
@@ -302,15 +310,18 @@ def completed_history_items(limit=5):
             continue
         try:
             metadata = history_metadata_for_dir(work_dir)
-        except (FileNotFoundError, json.JSONDecodeError):
+            created_at = float(metadata.get("created_at") or work_dir.stat().st_mtime)
+            if not math.isfinite(created_at) or created_at < 0:
+                raise ValueError("历史复盘时间无效")
+            created_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
+        except (FileNotFoundError, OSError, OverflowError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        created_at = float(metadata.get("created_at") or work_dir.stat().st_mtime)
         items.append({
             "job_id": metadata.get("job_id") or work_dir.name,
             "paipu": metadata.get("paipu") or work_dir.name,
             "player_id": metadata.get("player_id"),
             "created_at": created_at,
-            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at)),
+            "created_at_text": created_at_text,
         })
 
     items.sort(key=lambda item: item["created_at"], reverse=True)
@@ -318,6 +329,7 @@ def completed_history_items(limit=5):
 
 
 def history_metadata_for_dir(work_dir):
+    work_dir = Path(work_dir).resolve()
     metadata_path = work_dir / "metadata.json"
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -342,13 +354,29 @@ def history_metadata_for_dir(work_dir):
                 "mapped": "mortal-output-p2-mapped.jsonl",
             },
         }
-    files = metadata.get("files", {})
-    tenhou_path = work_dir / files.get("tenhou", "")
-    mjai_path = work_dir / files.get("mjai", "")
-    mapped_path = work_dir / files.get("mapped", "")
+    tenhou_path, mjai_path, mapped_path = history_paths_for_metadata(work_dir, metadata)
     if not all(path.exists() and path.is_file() and path.stat().st_size > 0 for path in (tenhou_path, mjai_path, mapped_path)):
         raise FileNotFoundError("这条历史复盘缺少结果文件")
     return metadata
+
+
+def history_paths_for_metadata(work_dir, metadata):
+    work_dir = Path(work_dir).resolve()
+    if not isinstance(metadata, dict):
+        raise ValueError("历史复盘元数据必须是 JSON 对象")
+    files = metadata.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("历史复盘元数据缺少 files")
+    paths = []
+    for key in ("tenhou", "mjai", "mapped"):
+        name = files.get(key)
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ValueError("历史复盘文件名无效")
+        path = (work_dir / name).resolve()
+        if work_dir not in path.parents:
+            raise ValueError("历史复盘文件必须位于任务目录")
+        paths.append(path)
+    return tuple(paths)
 
 
 def restore_history(job_id):
@@ -357,10 +385,7 @@ def restore_history(job_id):
         raise FileNotFoundError("找不到这条历史复盘")
 
     metadata = history_metadata_for_dir(work_dir)
-    files = metadata.get("files", {})
-    tenhou_path = work_dir / files.get("tenhou", "")
-    mjai_path = work_dir / files.get("mjai", "")
-    mapped_path = work_dir / files.get("mapped", "")
+    tenhou_path, mjai_path, mapped_path = history_paths_for_metadata(work_dir, metadata)
     copy_outputs(tenhou_path, mjai_path, mapped_path, metadata.get("player_id"))
     return metadata
 
