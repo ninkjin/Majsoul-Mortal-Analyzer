@@ -792,6 +792,14 @@ ANALYZER_HTML = """<!doctype html>
       return paipu.length > 34 ? `${paipu.slice(0, 30)}...` : paipu;
     }
 
+    function showHistoryMessage(message) {
+      historyList.replaceChildren();
+      const empty = document.createElement('div');
+      empty.className = 'history-empty';
+      empty.textContent = message;
+      historyList.appendChild(empty);
+    }
+
     function updateFetchModeUi() {
       const tensoulMode = fetchModeSelect.value === 'tensoul';
       startBtn.textContent = '开始分析';
@@ -830,26 +838,36 @@ ANALYZER_HTML = """<!doctype html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (!data.items.length) {
-          historyList.innerHTML = '<div class="history-empty">还没有成功分析过的历史复盘。</div>';
+          showHistoryMessage('还没有成功分析过的历史复盘。');
           return;
         }
-        historyList.innerHTML = '';
+        historyList.replaceChildren();
         for (const item of data.items) {
           const row = document.createElement('div');
           row.className = 'history-item';
-          row.innerHTML = `
-            <span>${shortPaipu(item.paipu)}<small>${item.created_at_text} · 玩家 ${item.player_id}</small></span>
-            <span class="history-actions">
-              <button class="history-action history-open" type="button">打开</button>
-              <button class="history-action history-delete" type="button">删除</button>
-            </span>
-          `;
-          row.querySelector('.history-open').onclick = () => openHistory(item.job_id);
-          row.querySelector('.history-delete').onclick = () => deleteHistory(item.job_id);
+          const summary = document.createElement('span');
+          summary.appendChild(document.createTextNode(shortPaipu(item.paipu)));
+          const details = document.createElement('small');
+          details.textContent = `${item.created_at_text} · 玩家 ${item.player_id}`;
+          summary.appendChild(details);
+          const actions = document.createElement('span');
+          actions.className = 'history-actions';
+          const openButton = document.createElement('button');
+          openButton.className = 'history-action history-open';
+          openButton.type = 'button';
+          openButton.textContent = '打开';
+          openButton.onclick = () => openHistory(item.job_id);
+          const deleteButton = document.createElement('button');
+          deleteButton.className = 'history-action history-delete';
+          deleteButton.type = 'button';
+          deleteButton.textContent = '删除';
+          deleteButton.onclick = () => deleteHistory(item.job_id);
+          actions.append(openButton, deleteButton);
+          row.append(summary, actions);
           historyList.appendChild(row);
         }
       } catch (error) {
-        historyList.innerHTML = `<div class="history-empty">${error.message}</div>`;
+        showHistoryMessage(error.message);
       }
     }
 
@@ -1004,6 +1022,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_json_body(self):
+        if self.headers.get_content_type().casefold() != "application/json":
+            raise HttpRequestError("Content-Type 必须是 application/json", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             raise HttpRequestError("缺少 Content-Length", HTTPStatus.LENGTH_REQUIRED)
@@ -1031,7 +1051,42 @@ class Handler(BaseHTTPRequestHandler):
         status = exc.status if isinstance(exc, HttpRequestError) else HTTPStatus.BAD_REQUEST
         self.send_json({"error": str(exc)}, status)
 
+    def request_host_is_allowed(self):
+        try:
+            parsed = urllib.parse.urlsplit("//" + self.headers.get("Host", ""))
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            return False
+        local_host, local_port = self.connection.getsockname()[:2]
+        allowed_hosts = {"localhost", "127.0.0.1", "::1", str(local_host).casefold().split("%", 1)[0]}
+        return host in allowed_hosts and (port is None or port == local_port)
+
+    def request_origin_is_allowed(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        try:
+            parsed_origin = urllib.parse.urlsplit(origin)
+            parsed_host = urllib.parse.urlsplit("//" + self.headers.get("Host", ""))
+            origin_host = (parsed_origin.hostname or "").casefold().rstrip(".")
+            request_host = (parsed_host.hostname or "").casefold().rstrip(".")
+            local_port = self.connection.getsockname()[1]
+            origin_port = parsed_origin.port or 80
+            request_port = parsed_host.port or local_port
+        except ValueError:
+            return False
+        return parsed_origin.scheme == "http" and origin_host == request_host and origin_port == request_port
+
+    def reject_untrusted_request(self, include_origin=False):
+        if not self.request_host_is_allowed() or (include_origin and not self.request_origin_is_allowed()):
+            self.send_json({"error": "forbidden"}, HTTPStatus.FORBIDDEN)
+            return True
+        return False
+
     def do_GET(self):
+        if self.reject_untrusted_request():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/paipu-analyzer.html"):
             self.send_text(ANALYZER_HTML)
@@ -1091,6 +1146,8 @@ class Handler(BaseHTTPRequestHandler):
             shutil.copyfileobj(source, self.wfile, length=64 * 1024)
 
     def do_POST(self):
+        if self.reject_untrusted_request(include_origin=True):
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/use-history":
             try:

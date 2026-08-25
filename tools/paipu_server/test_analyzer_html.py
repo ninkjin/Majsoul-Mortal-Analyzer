@@ -44,6 +44,15 @@ class AnalyzerHtmlTest(unittest.TestCase):
         self.assertIn("model_name: modelSelect.value", html)
         self.assertIn("loadModels();", html)
 
+    def test_history_values_are_rendered_as_text_instead_of_html(self):
+        html = server.ANALYZER_HTML
+
+        self.assertIn("summary.appendChild(document.createTextNode(shortPaipu(item.paipu)))", html)
+        self.assertIn("details.textContent =", html)
+        self.assertIn("showHistoryMessage(error.message)", html)
+        self.assertNotIn("row.innerHTML", html)
+        self.assertNotIn("${error.message}</div>", html)
+
 
 if __name__ == "__main__":
     unittest.main()

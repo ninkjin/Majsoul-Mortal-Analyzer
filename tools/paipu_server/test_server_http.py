@@ -66,10 +66,36 @@ class ServerHttpTest(unittest.TestCase):
             "POST",
             "/api/analyze",
             body=b"{}",
-            headers={"Content-Length": str(server.MAX_REQUEST_BODY_BYTES + 1)},
+            headers={
+                "Content-Length": str(server.MAX_REQUEST_BODY_BYTES + 1),
+                "Content-Type": "application/json",
+            },
         )
         self.assertEqual(status, 413)
         self.assertIn("请求体过大", json.loads(payload)["error"])
+
+    def test_untrusted_host_is_rejected(self):
+        status, _ = self.request("GET", "/api/models", headers={"Host": "attacker.example"})
+        self.assertEqual(status, 403)
+
+    def test_cross_origin_post_is_rejected(self):
+        status, _ = self.request(
+            "POST",
+            "/api/analyze",
+            body=b"{}",
+            headers={"Content-Type": "application/json", "Origin": "http://attacker.example"},
+        )
+        self.assertEqual(status, 403)
+
+    def test_json_endpoints_reject_browser_simple_content_types(self):
+        status, payload = self.request(
+            "POST",
+            "/api/analyze",
+            body=b"{}",
+            headers={"Content-Type": "text/plain"},
+        )
+        self.assertEqual(status, 415)
+        self.assertIn("application/json", json.loads(payload)["error"])
 
 
 if __name__ == "__main__":
