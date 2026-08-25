@@ -33,6 +33,7 @@ LEGACY_CURRENT_OUTPUT_NAMES = (
 )
 HISTORY_KEEP = 20
 JOB_STATUS_KEEP = 100
+MAX_PENDING_JOBS = 10
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -492,14 +493,17 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
 
 
 class AnalysisScheduler:
-    def __init__(self, target):
+    def __init__(self, target, max_pending=MAX_PENDING_JOBS):
         self._target = target
-        self._queue = queue.Queue()
+        self._queue = queue.Queue(maxsize=max_pending)
         self._start_lock = threading.Lock()
         self._worker = None
 
     def submit(self, *args, **kwargs):
-        self._queue.put((args, kwargs))
+        try:
+            self._queue.put_nowait((args, kwargs))
+        except queue.Full:
+            return False
         with self._start_lock:
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(
@@ -508,6 +512,7 @@ class AnalysisScheduler:
                     daemon=True,
                 )
                 self._worker.start()
+        return True
 
     def _run(self):
         while True:
@@ -1256,7 +1261,7 @@ class Handler(BaseHTTPRequestHandler):
                 "created_at": time.time(),
                 "updated_at": time.time(),
             }
-        ANALYSIS_SCHEDULER.submit(
+        submitted = ANALYSIS_SCHEDULER.submit(
             job_id,
             url,
             player_id,
@@ -1266,6 +1271,11 @@ class Handler(BaseHTTPRequestHandler):
             fetch_method,
             model_name,
         )
+        if not submitted:
+            with JOBS_LOCK:
+                JOBS.pop(job_id, None)
+            self.send_json({"error": "等待分析的任务过多，请稍后重试。"}, HTTPStatus.TOO_MANY_REQUESTS)
+            return
         self.send_json({"job_id": job_id})
 
     def log_message(self, fmt, *args):

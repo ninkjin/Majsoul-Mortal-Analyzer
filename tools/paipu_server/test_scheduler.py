@@ -51,6 +51,29 @@ class AnalysisSchedulerTest(unittest.TestCase):
 
         self.assertEqual(set(jobs), {"new-error", "new-done", "queued", "running"})
 
+    def test_pending_queue_has_a_hard_limit(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        all_finished = threading.Event()
+        completed = []
+
+        def target(job_id):
+            if job_id == 1:
+                first_started.set()
+                release_first.wait(timeout=2)
+            completed.append(job_id)
+            if job_id == 2:
+                all_finished.set()
+
+        scheduler = server.AnalysisScheduler(target, max_pending=1)
+        self.assertTrue(scheduler.submit(1))
+        self.assertTrue(first_started.wait(timeout=1))
+        self.assertTrue(scheduler.submit(2))
+        self.assertFalse(scheduler.submit(3))
+        release_first.set()
+        self.assertTrue(all_finished.wait(timeout=1))
+        self.assertEqual(completed, [1, 2])
+
 
 if __name__ == "__main__":
     unittest.main()
