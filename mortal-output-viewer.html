@@ -1702,7 +1702,7 @@
       $('choiceDetail').innerHTML = `
         <div class="compare-row">
           <div class="compare-label">Mortal 推荐</div>
-          <div class="compare-value"><span class="badge ${output.type}">${escapeHtml(output.type)}</span> ${escapeHtml(actionText(output))}</div>
+          <div class="compare-value"><span class="badge ${escapeHtml(output.type)}">${escapeHtml(output.type)}</span> ${escapeHtml(actionText(output))}</div>
         </div>
         <div class="compare-row">
           <div class="compare-label">触发事件</div>
@@ -1799,7 +1799,7 @@
         .map(choice => `<button class="choice-btn ${choice.index === current.index ? 'active' : ''} ${choice.diff ? 'diff' : ''}" data-choice="${choice.index}">
           <span class="choice-main">
             <span>#${choice.index + 1} ${escapeHtml(actionText(choice.output))}</span>
-            <span class="badge ${choice.output.type}">${escapeHtml(choice.output.type)}</span>
+            <span class="badge ${escapeHtml(choice.output.type)}">${escapeHtml(choice.output.type)}</span>
           </span>
           <span class="choice-sub">${escapeHtml(eventText(choice.trigger))} · 向听 ${choice.output.meta?.shanten ?? '-'}</span>
         </button>`)

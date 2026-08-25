@@ -6,6 +6,14 @@ VIEWER_HTML = Path(__file__).resolve().parents[2] / "mortal-output-viewer.html"
 
 
 class ViewerHtmlTest(unittest.TestCase):
+    def test_action_types_are_escaped_inside_class_attributes(self):
+        html = VIEWER_HTML.read_text(encoding="utf-8")
+
+        self.assertIn('class="badge ${escapeHtml(output.type)}"', html)
+        self.assertIn('class="badge ${escapeHtml(choice.output.type)}"', html)
+        self.assertNotIn('class="badge ${output.type}"', html)
+        self.assertNotIn('class="badge ${choice.output.type}"', html)
+
     def test_settlement_is_gated_by_current_event_index(self):
         html = VIEWER_HTML.read_text(encoding="utf-8")
 
