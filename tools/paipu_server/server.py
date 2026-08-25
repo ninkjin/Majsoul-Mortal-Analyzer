@@ -927,22 +927,37 @@ ANALYZER_HTML = """<!doctype html>
       loadHistory();
     }
 
-    async function poll(jobId) {
-      const res = await fetch(`/api/status?job_id=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
-      const job = await res.json();
-      setProgress(job);
-      if (job.status === 'done') {
-        statusBox.textContent = '分析完成，正在打开复盘页。';
-        loadHistory();
-        window.location.href = job.viewer || '/mortal-output-viewer.html';
-        return;
-      }
-      if (job.status === 'error') {
-        statusBox.textContent = job.error || '分析失败';
+    async function poll(jobId, failures = 0) {
+      try {
+        const res = await fetch(`/api/status?job_id=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.error || `HTTP ${res.status}`);
+        setProgress(job);
+        if (job.status === 'done') {
+          statusBox.textContent = '分析完成，正在打开复盘页。';
+          loadHistory();
+          window.location.href = job.viewer || '/mortal-output-viewer.html';
+          return;
+        }
+        if (job.status === 'error') {
+          statusBox.textContent = job.error || '分析失败';
+          startBtn.disabled = false;
+          return;
+        }
+        setTimeout(() => poll(jobId, 0), 1000);
+      } catch (error) {
+        const nextFailures = failures + 1;
+        if (nextFailures <= 5) {
+          const delay = Math.min(1000 * (2 ** (nextFailures - 1)), 5000);
+          statusBox.textContent = `状态连接暂时中断，${Math.ceil(delay / 1000)} 秒后重试...`;
+          detail.textContent = String(error.stack || error);
+          setTimeout(() => poll(jobId, nextFailures), delay);
+          return;
+        }
+        statusBox.textContent = `无法读取任务状态：${error.message}`;
+        detail.textContent = String(error.stack || error);
         startBtn.disabled = false;
-        return;
       }
-      setTimeout(() => poll(jobId), 1000);
     }
 
     startBtn.onclick = async () => {
@@ -965,7 +980,8 @@ ANALYZER_HTML = """<!doctype html>
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        poll(data.job_id);
+        passwordInput.value = '';
+        poll(data.job_id, 0);
         loadHistory();
       } catch (error) {
         statusBox.textContent = error.message;

@@ -53,6 +53,15 @@ class AnalyzerHtmlTest(unittest.TestCase):
         self.assertNotIn("row.innerHTML", html)
         self.assertNotIn("${error.message}</div>", html)
 
+    def test_status_polling_recovers_from_temporary_connection_errors(self):
+        html = server.ANALYZER_HTML
+
+        self.assertIn("async function poll(jobId, failures = 0)", html)
+        self.assertIn("nextFailures <= 5", html)
+        self.assertIn("setTimeout(() => poll(jobId, nextFailures), delay)", html)
+        self.assertIn("startBtn.disabled = false", html)
+        self.assertIn("passwordInput.value = ''", html)
+
 
 if __name__ == "__main__":
     unittest.main()
