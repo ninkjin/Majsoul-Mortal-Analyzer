@@ -25,6 +25,14 @@ MAX_ERROR_TEXT_CHARS = 300
 WAIT_TIMEOUT_MESSAGE = "等待远程牌谱服务超时，请稍后重试。"
 
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_REMOTE_OPENER = urllib.request.build_opener(NoRedirectHandler())
+
+
 class RemoteServiceError(RuntimeError):
     """A safe, user-facing error from the remote paipu service."""
 
@@ -107,6 +115,10 @@ def _service_text(value, limit=MAX_ERROR_TEXT_CHARS):
     return text
 
 
+def _open_url(request, timeout):
+    return _REMOTE_OPENER.open(request, timeout=timeout)
+
+
 def _safe_error_message(status, payload):
     if status == 401:
         return "远程牌谱服务 API Key 无效或已被撤销。"
@@ -149,7 +161,7 @@ def _request_json(
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_url(request, timeout) as response:
             raw = _read_limited(response, max_bytes)
     except urllib.error.HTTPError as exc:
         try:

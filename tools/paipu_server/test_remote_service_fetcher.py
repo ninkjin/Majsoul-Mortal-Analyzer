@@ -161,7 +161,7 @@ class RemoteServiceFetchTest(unittest.TestCase):
             {},
             BytesIO(b'{"detail":"Invalid API key"}'),
         )
-        with patch("urllib.request.urlopen", side_effect=error):
+        with patch.object(remote, "_open_url", side_effect=error):
             with self.assertRaises(remote.RemoteServiceError) as raised:
                 remote._request_json("https://ninklang.tech/api/v1/client/requests", api_key)
 
@@ -176,7 +176,7 @@ class RemoteServiceFetchTest(unittest.TestCase):
             {},
             BytesIO(b"Internal Server Error"),
         )
-        with patch("urllib.request.urlopen", side_effect=error):
+        with patch.object(remote, "_open_url", side_effect=error):
             with self.assertRaises(remote.RemoteServiceConnectionError):
                 remote._request_json(
                     "https://ninklang.tech/api/v1/requests/request-1",
@@ -191,7 +191,7 @@ class RemoteServiceFetchTest(unittest.TestCase):
             {"Retry-After": "3"},
             BytesIO(b'{"detail":"rate limited"}'),
         )
-        with patch("urllib.request.urlopen", side_effect=error):
+        with patch.object(remote, "_open_url", side_effect=error):
             with self.assertRaises(remote.RemoteServiceConnectionError) as raised:
                 remote._request_json(
                     "https://ninklang.tech/api/v1/client/requests",
@@ -199,6 +199,22 @@ class RemoteServiceFetchTest(unittest.TestCase):
                 )
 
         self.assertEqual(raised.exception.retry_after, 3)
+
+    def test_redirects_are_not_followed_with_authorization_header(self):
+        request = urllib.request.Request(
+            "https://ninklang.tech/api/v1/client/requests",
+            headers={"Authorization": "Bearer pk_secret"},
+        )
+        redirected = remote.NoRedirectHandler().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://attacker.example/collect",
+        )
+
+        self.assertIsNone(redirected)
 
     def test_retry_uses_service_retry_after_delay(self):
         delays = []
