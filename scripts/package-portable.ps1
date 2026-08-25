@@ -11,6 +11,9 @@ if (-not (Test-Path $python)) {
   throw "portable Python was not found. Prepare .conda\python.exe first."
 }
 & $python -c "import torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; print('portable source deps ok')"
+if ($LASTEXITCODE -ne 0) {
+  throw "portable source dependency check failed."
+}
 
 $dist = Join-Path $root "dist"
 $stage = Join-Path $dist "mortal-paipu-analyzer"
@@ -38,6 +41,33 @@ $include = @(
 
 Copy-Item -LiteralPath $runtimeSource -Destination (Join-Path $stage "runtime") -Recurse -Force
 
+$stagedRuntime = Join-Path $stage "runtime"
+$stagedRuntimeRoot = [IO.Path]::GetFullPath($stagedRuntime).TrimEnd('\') + '\'
+function Remove-StagedBuildTool([string]$candidate) {
+  $target = [IO.Path]::GetFullPath($candidate)
+  if (-not $target.StartsWith($stagedRuntimeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing to remove a path outside the staged runtime: $target"
+  }
+  if (Test-Path -LiteralPath $target) {
+    Remove-Item -LiteralPath $target -Recurse -Force
+  }
+}
+
+Remove-StagedBuildTool (Join-Path $stagedRuntime "Scripts\maturin.exe")
+$stagedSitePackages = Join-Path $stagedRuntime "Lib\site-packages"
+Remove-StagedBuildTool (Join-Path $stagedSitePackages "maturin")
+Get-ChildItem -LiteralPath $stagedSitePackages -Directory -Filter "maturin-*.dist-info" -ErrorAction SilentlyContinue |
+  ForEach-Object { Remove-StagedBuildTool $_.FullName }
+
+$stagedPython = Join-Path $stagedRuntime "python.exe"
+if (-not (Test-Path $stagedPython)) {
+  $stagedPython = Join-Path $stagedRuntime "Scripts\python.exe"
+}
+& $stagedPython -B -c "import importlib.util, torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; assert importlib.util.find_spec('maturin') is None; print('staged runtime deps ok')"
+if ($LASTEXITCODE -ne 0) {
+  throw "staged runtime dependency check failed."
+}
+
 foreach ($item in $include) {
   $source = Join-Path $root $item
   if (Test-Path $source) {
@@ -59,7 +89,15 @@ Get-ChildItem -Path $root -Filter "*.cmd" | ForEach-Object {
 if (Test-Path $zip) {
   Remove-Item -LiteralPath $zip -Force
 }
-Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
+$tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+if ($tar) {
+  & $tar.Source -a -c -f $zip -C $stage .
+  if ($LASTEXITCODE -ne 0) {
+    throw "tar.exe failed to create the portable zip."
+  }
+} else {
+  Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
+}
 
 Write-Host "Portable package written:"
 Write-Host $zip
