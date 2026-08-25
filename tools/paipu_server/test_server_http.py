@@ -3,6 +3,7 @@ import json
 import tempfile
 import threading
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +113,18 @@ class ServerHttpTest(unittest.TestCase):
         )
         self.assertEqual(status, 415)
         self.assertIn("application/json", json.loads(payload)["error"])
+
+    def test_request_log_suppresses_successful_get_noise_only(self):
+        handler = object.__new__(server.Handler)
+        output = StringIO()
+        with patch("sys.stderr", output):
+            handler.log_message('"%s" %s %s', "GET /api/status?job_id=x HTTP/1.1", "200", "-")
+            self.assertEqual(output.getvalue(), "")
+            handler.log_message('"%s" %s %s', "GET /api/status?job_id=x HTTP/1.1", "404", "-")
+            handler.log_message('"%s" %s %s', "POST /api/analyze HTTP/1.1", "200", "-")
+
+        self.assertIn("404", output.getvalue())
+        self.assertIn("POST /api/analyze", output.getvalue())
 
 
 if __name__ == "__main__":

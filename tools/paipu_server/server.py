@@ -1297,6 +1297,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"job_id": job_id})
 
     def log_message(self, fmt, *args):
+        if len(args) >= 2:
+            request_line = str(args[0])
+            try:
+                status = int(args[1])
+            except (TypeError, ValueError):
+                status = 0
+            if request_line.startswith("GET ") and 200 <= status < 400:
+                return
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
 
