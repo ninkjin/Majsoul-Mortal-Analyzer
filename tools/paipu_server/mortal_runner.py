@@ -1,7 +1,20 @@
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from uuid import uuid4
+
+
+_RUNTIME_CACHE_LOCK = threading.Lock()
+_VERIFIED_PYTHONS = set()
+_SITE_PACKAGES_CACHE = {}
+
+
+def clear_runtime_probe_cache():
+    with _RUNTIME_CACHE_LOCK:
+        _VERIFIED_PYTHONS.clear()
+        _SITE_PACKAGES_CACHE.clear()
 
 
 def runtime_python_candidates(root):
@@ -27,7 +40,14 @@ def find_local_python(root):
 
 
 def python_has_mortal_deps(python):
-    code = "import torch; from libriichi.mjai import Bot; print('ok')"
+    python = Path(python).resolve()
+    with _RUNTIME_CACHE_LOCK:
+        if python in _VERIFIED_PYTHONS:
+            return True
+    code = (
+        "import sysconfig; import torch; from libriichi.mjai import Bot; "
+        "print(sysconfig.get_path('purelib') or '')"
+    )
     try:
         result = subprocess.run(
             [str(python), "-c", code],
@@ -38,10 +58,22 @@ def python_has_mortal_deps(python):
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0
+    available = result.returncode == 0
+    if available:
+        site_packages = result.stdout.strip()
+        with _RUNTIME_CACHE_LOCK:
+            _VERIFIED_PYTHONS.add(python)
+            if site_packages:
+                _SITE_PACKAGES_CACHE[python] = site_packages
+    return available
 
 
 def python_site_packages(python):
+    python = Path(python).resolve()
+    with _RUNTIME_CACHE_LOCK:
+        cached = _SITE_PACKAGES_CACHE.get(python)
+    if cached:
+        return cached
     code = "import sysconfig; print(sysconfig.get_path('purelib'))"
     try:
         result = subprocess.run(
@@ -56,7 +88,11 @@ def python_site_packages(python):
     if result.returncode != 0:
         return None
     path = result.stdout.strip()
-    return path or None
+    if path:
+        with _RUNTIME_CACHE_LOCK:
+            _SITE_PACKAGES_CACHE[python] = path
+        return path
+    return None
 
 
 def model_file(root, name):
@@ -145,16 +181,24 @@ def run_mortal_mapping(root, mjai_path, mapped_path, player_id, model_path=None)
         env = None
         cmd = docker_command(root, player_id, model_path)
 
-    with Path(mjai_path).open("rb") as stdin, Path(mapped_path).open("wb") as stdout:
-        try:
-            subprocess.run(cmd, cwd=root, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, env=env, check=True)
-        except FileNotFoundError as exc:
-            raise RuntimeError(_missing_runtime_message()) from exc
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
-            if "dockerDesktopLinuxEngine" in stderr or "Cannot connect to the Docker daemon" in stderr:
+    mapped_path = Path(mapped_path)
+    mapped_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = mapped_path.with_name(f".{mapped_path.name}.{uuid4().hex}.tmp")
+    try:
+        with Path(mjai_path).open("rb") as stdin, temporary.open("wb") as stdout:
+            try:
+                subprocess.run(cmd, cwd=root, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, env=env, check=True)
+            except FileNotFoundError as exc:
                 raise RuntimeError(_missing_runtime_message()) from exc
-            raise RuntimeError(f"Mortal 分析失败：{stderr.strip() or exc}") from exc
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
+                if "dockerDesktopLinuxEngine" in stderr or "Cannot connect to the Docker daemon" in stderr:
+                    raise RuntimeError(_missing_runtime_message()) from exc
+                raise RuntimeError(f"Mortal 分析失败：{stderr.strip() or exc}") from exc
+        temporary.replace(mapped_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _missing_runtime_message():
