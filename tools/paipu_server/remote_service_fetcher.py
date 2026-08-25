@@ -115,6 +115,10 @@ def _service_text(value, limit=MAX_ERROR_TEXT_CHARS):
     return text
 
 
+def _redact_secret(value, secret):
+    return value.replace(secret, "***") if secret else value
+
+
 def _open_url(request, timeout):
     return _REMOTE_OPENER.open(request, timeout=timeout)
 
@@ -169,7 +173,7 @@ def _request_json(
             error_payload = json.loads(error_raw.decode("utf-8"))
         except (RemoteServiceError, UnicodeDecodeError, json.JSONDecodeError):
             error_payload = {}
-        message = _safe_error_message(exc.code, error_payload)
+        message = _redact_secret(_safe_error_message(exc.code, error_payload), api_key)
         if exc.code in RETRYABLE_HTTP_STATUSES or exc.code >= 500:
             raise RemoteServiceConnectionError(message, _retry_after_seconds(exc.headers)) from None
         raise RemoteServiceError(message) from None

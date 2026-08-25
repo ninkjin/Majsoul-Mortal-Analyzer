@@ -177,6 +177,22 @@ class RemoteServiceFetchTest(unittest.TestCase):
         self.assertIn("API Key", str(raised.exception))
         self.assertNotIn(api_key, str(raised.exception))
 
+    def test_service_error_echo_cannot_expose_api_key(self):
+        api_key = "pk_" + "secret" * 8
+        error = urllib.error.HTTPError(
+            "https://ninklang.tech/api/v1/client/requests",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(json.dumps({"detail": f"rejected token {api_key}"}).encode("utf-8")),
+        )
+        with patch.object(remote, "_open_url", side_effect=error):
+            with self.assertRaises(remote.RemoteServiceError) as raised:
+                remote._request_json("https://ninklang.tech/api/v1/client/requests", api_key)
+
+        self.assertNotIn(api_key, str(raised.exception))
+        self.assertIn("***", str(raised.exception))
+
     def test_http_500_is_treated_as_a_retryable_service_failure(self):
         error = urllib.error.HTTPError(
             "https://ninklang.tech/api/v1/requests/request-1",
