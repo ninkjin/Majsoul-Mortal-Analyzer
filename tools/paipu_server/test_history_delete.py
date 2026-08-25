@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,48 @@ class HistoryDeleteTest(unittest.TestCase):
             self.assertEqual(json.loads((root / "viewer-data" / "mortal-viewer-config.json").read_text(encoding="utf-8")), {"player_id": 2})
             for name in server.LEGACY_CURRENT_OUTPUT_NAMES:
                 self.assertFalse((root / name).exists())
+
+    def test_copy_outputs_keeps_previous_snapshot_when_staging_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "job"
+            current = root / "viewer-data"
+            work.mkdir()
+            current.mkdir()
+            tenhou = work / "source.json"
+            mjai = work / "log.json"
+            mapped = work / "mapped.jsonl"
+            tenhou.write_text("new tenhou", encoding="utf-8")
+            mjai.write_text("new mjai", encoding="utf-8")
+            mapped.write_text("new mapped", encoding="utf-8")
+            destinations = (
+                current / "log.json",
+                current / "mortal-output-p2-mapped.jsonl",
+                current / "majsoul-tenhou-current.json",
+            )
+            for destination in destinations:
+                destination.write_text("old", encoding="utf-8")
+
+            real_copyfile = shutil.copyfile
+            copy_count = 0
+
+            def fail_second_copy(source, destination):
+                nonlocal copy_count
+                copy_count += 1
+                if copy_count == 2:
+                    raise OSError("disk full")
+                return real_copyfile(source, destination)
+
+            with (
+                patch.object(server, "ROOT", root),
+                patch.object(server, "CURRENT_DATA_DIR", current),
+                patch.object(server.shutil, "copyfile", side_effect=fail_second_copy),
+            ):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    server.copy_outputs(tenhou, mjai, mapped, player_id=2)
+
+            self.assertEqual([path.read_text(encoding="utf-8") for path in destinations], ["old"] * 3)
+            self.assertEqual(list(current.glob(".*.tmp")), [])
 
     def test_delete_history_removes_safe_job_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

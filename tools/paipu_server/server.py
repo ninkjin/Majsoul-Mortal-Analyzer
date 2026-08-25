@@ -4,6 +4,7 @@ import importlib.util
 import json
 import mimetypes
 import os
+import queue
 import re
 import sys
 import threading
@@ -30,9 +31,11 @@ LEGACY_CURRENT_OUTPUT_NAMES = (
     "mortal-viewer-config.json",
 )
 HISTORY_KEEP = 20
+JOB_STATUS_KEEP = 100
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+CURRENT_OUTPUTS_LOCK = threading.Lock()
 _REWARD_CALCULATOR_MODULE = None
 PRIVATE_STATIC_FILES = {".env", "paipu-service.local.json"}
 PUBLIC_STATIC_FILES = {"majsoul-paipu-fetcher.html", "mortal-output-viewer.html"}
@@ -110,6 +113,22 @@ def set_job(job_id, **updates):
         JOBS[job_id]["updated_at"] = time.time()
 
 
+def prune_finished_jobs(keep=JOB_STATUS_KEEP):
+    keep = max(0, int(keep))
+    with JOBS_LOCK:
+        finished = sorted(
+            (
+                (job_id, job)
+                for job_id, job in JOBS.items()
+                if job.get("status") in ("done", "error")
+            ),
+            key=lambda item: float(item[1].get("updated_at") or 0),
+            reverse=True,
+        )
+        for job_id, _job in finished[keep:]:
+            JOBS.pop(job_id, None)
+
+
 def download_with_remote_service(url, tenhou_path, status_callback=None):
     from remote_service_fetcher import fetch_remote_tenhou
 
@@ -152,16 +171,34 @@ def run_mortal_mapping(mjai_path, mapped_path, player_id, model_name=DEFAULT_MOD
 
 
 def copy_outputs(tenhou_path, mjai_path, mapped_path, player_id=None):
-    CURRENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (CURRENT_DATA_DIR / "log.json").write_bytes(mjai_path.read_bytes())
-    (CURRENT_DATA_DIR / "mortal-output-p2-mapped.jsonl").write_bytes(mapped_path.read_bytes())
-    (CURRENT_DATA_DIR / "majsoul-tenhou-current.json").write_bytes(tenhou_path.read_bytes())
-    if player_id is not None:
-        (CURRENT_DATA_DIR / "mortal-viewer-config.json").write_text(
-            json.dumps({"player_id": int(player_id)}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    cleanup_legacy_current_outputs()
+    output_pairs = [
+        (Path(mjai_path), CURRENT_DATA_DIR / "log.json"),
+        (Path(mapped_path), CURRENT_DATA_DIR / "mortal-output-p2-mapped.jsonl"),
+        (Path(tenhou_path), CURRENT_DATA_DIR / "majsoul-tenhou-current.json"),
+    ]
+    staged = []
+    with CURRENT_OUTPUTS_LOCK:
+        CURRENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            for source, target in output_pairs:
+                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+                staged.append((temporary, target))
+                shutil.copyfile(source, temporary)
+            if player_id is not None:
+                target = CURRENT_DATA_DIR / "mortal-viewer-config.json"
+                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+                staged.append((temporary, target))
+                temporary.write_text(
+                    json.dumps({"player_id": int(player_id)}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            for temporary, target in staged:
+                temporary.replace(target)
+            cleanup_legacy_current_outputs()
+        finally:
+            for temporary, _target in staged:
+                if temporary.exists():
+                    temporary.unlink()
 
 
 def cleanup_legacy_current_outputs():
@@ -411,7 +448,7 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
                 "mapped": str(mapped_path),
             },
         )
-    except BaseException as exc:
+    except Exception as exc:
         error_text = f"{type(exc).__name__}: {exc}"
         traceback_text = traceback.format_exc()
         for secret in (username, password):
@@ -425,6 +462,40 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
             error=error_text,
             traceback=traceback_text,
         )
+    finally:
+        prune_finished_jobs()
+
+
+class AnalysisScheduler:
+    def __init__(self, target):
+        self._target = target
+        self._queue = queue.Queue()
+        self._start_lock = threading.Lock()
+        self._worker = None
+
+    def submit(self, *args, **kwargs):
+        self._queue.put((args, kwargs))
+        with self._start_lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(
+                    target=self._run,
+                    name="mortal-analysis-worker",
+                    daemon=True,
+                )
+                self._worker.start()
+
+    def _run(self):
+        while True:
+            args, kwargs = self._queue.get()
+            try:
+                self._target(*args, **kwargs)
+            except Exception:
+                traceback.print_exc()
+            finally:
+                self._queue.task_done()
+
+
+ANALYSIS_SCHEDULER = AnalysisScheduler(analyze_job)
 
 
 ANALYZER_HTML = """<!doctype html>
@@ -1075,12 +1146,16 @@ class Handler(BaseHTTPRequestHandler):
                 "created_at": time.time(),
                 "updated_at": time.time(),
             }
-        thread = threading.Thread(
-            target=analyze_job,
-            args=(job_id, url, player_id, username, password, player_name, fetch_method, model_name),
-            daemon=True,
+        ANALYSIS_SCHEDULER.submit(
+            job_id,
+            url,
+            player_id,
+            username,
+            password,
+            player_name,
+            fetch_method,
+            model_name,
         )
-        thread.start()
         self.send_json({"job_id": job_id})
 
     def log_message(self, fmt, *args):
