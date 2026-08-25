@@ -123,6 +123,8 @@ tmp/paipu_jobs/
 
 `viewer-data` 保存当前复盘页正在读取的数据。`tmp/paipu_jobs` 保存历史分析任务和中间文件。这些都是本地运行产物，不建议提交到 GitHub。
 
+为避免多个 PyTorch 推理进程争抢 CPU、内存并互相覆盖当前复盘，本地服务会按提交顺序串行分析；除正在运行的任务外，最多保留 10 个待处理任务。队列已满时页面会提示稍后重试。
+
 ## 便携运行环境
 
 如果不想依赖 Docker Desktop，可以用脚本检查并补齐本地 `.conda` 运行环境：
@@ -142,6 +144,26 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
 ### 环境检查
 
 双击 `检查环境.cmd` 可以手动检测 Python 依赖是否完整（torch、mahjong、tensoul、numpy 等）。如果有缺失会自动安装，全部通过则显示"环境检查通过"。正常情况下直接运行 `启动雀魂分析器.cmd` 即可；遇到启动报错时再单独运行检查脚本排查。
+
+## 开发验证
+
+提交代码前可以运行以下检查：
+
+```powershell
+python -m unittest discover -s .\tools\paipu_server -p "test_*.py"
+python -m compileall -q .\tools .\mortal
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+验证便携包构建：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
+```
+
+打包脚本会分别验证源 runtime 和 staging runtime，并从最终包中排除只在编译 `libriichi` 时使用的 `maturin` 构建工具。
 
 ## 项目结构
 
