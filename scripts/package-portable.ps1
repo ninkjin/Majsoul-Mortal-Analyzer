@@ -29,6 +29,8 @@ $include = @(
   "mortal",
   "tools",
   "log-viewer",
+  "README.md",
+  "LICENSE",
   "mortal-output-viewer.html",
   "majsoul-paipu-fetcher.html",
   "paipu-service.example.json",
