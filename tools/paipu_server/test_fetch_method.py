@@ -22,6 +22,48 @@ class FetchMethodTest(unittest.TestCase):
 
         self.assertNotIn("from reward_calculator import", source)
 
+    def test_reviewer_failure_preserves_previous_mjai_output(self):
+        reward_calculator = server._load_reward_calculator_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reviewer = root / "reviewer.exe"
+            source = root / "source.json"
+            output = root / "log.json"
+            reviewer.write_bytes(b"")
+            source.write_text("{}", encoding="utf-8")
+            output.write_text("previous", encoding="utf-8")
+            failure = reward_calculator.subprocess.CalledProcessError(1, [str(reviewer)])
+
+            with patch.object(reward_calculator.subprocess, "run", side_effect=failure):
+                with self.assertRaises(reward_calculator.subprocess.CalledProcessError):
+                    reward_calculator.tenhou_log_to_mjai_log(source, output, reviewer_exe=reviewer)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "previous")
+            self.assertEqual(list(root.glob(".*.tmp")), [])
+
+    def test_reviewer_writes_to_temporary_file_with_timeout(self):
+        reward_calculator = server._load_reward_calculator_module()
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reviewer = root / "reviewer.exe"
+            source = root / "source.json"
+            output = root / "log.json"
+            reviewer.write_bytes(b"")
+            source.write_text("{}", encoding="utf-8")
+
+            def fake_run(command, **kwargs):
+                temporary = Path(command[command.index("--mjai-out") + 1])
+                temporary.write_text("fresh", encoding="utf-8")
+                captured.update(kwargs)
+
+            with patch.object(reward_calculator.subprocess, "run", side_effect=fake_run):
+                reward_calculator.tenhou_log_to_mjai_log(source, output, reviewer_exe=reviewer)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "fresh")
+            self.assertEqual(captured["timeout"], reward_calculator.REVIEWER_TIMEOUT_SECONDS)
+            self.assertEqual(list(root.glob(".*.tmp")), [])
+
     def run_job_with_patches(self, fetch_method):
         calls = []
 
