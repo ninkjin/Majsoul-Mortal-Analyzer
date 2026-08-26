@@ -11,6 +11,7 @@ class PortablePackagingTest(unittest.TestCase):
 
         self.assertIn('"README.md"', script)
         self.assertIn('"LICENSE"', script)
+        self.assertIn('"scripts"', script)
 
     def test_build_tool_is_installed_for_setup_but_removed_from_package(self):
         requirements = (ROOT / "requirements-runtime.txt").read_text(encoding="utf-8-sig").splitlines()
@@ -21,6 +22,7 @@ class PortablePackagingTest(unittest.TestCase):
         self.assertIn("-m pip install maturin", setup)
         self.assertIn("Remove-StagedBuildTool", package)
         self.assertIn("Get-Command tar.exe", package)
+        self.assertIn("zip:hdrcharset=UTF-8", package)
 
 
 if __name__ == "__main__":

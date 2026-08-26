@@ -28,6 +28,7 @@ $include = @(
   "mj_model",
   "mortal",
   "tools",
+  "scripts",
   "log-viewer",
   "README.md",
   "LICENSE",
@@ -93,7 +94,7 @@ if (Test-Path $zip) {
 }
 $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
 if ($tar) {
-  & $tar.Source -a -c -f $zip -C $stage .
+  & $tar.Source -a -c --options zip:hdrcharset=UTF-8 -f $zip -C $stage .
   if ($LASTEXITCODE -ne 0) {
     throw "tar.exe failed to create the portable zip."
   }
