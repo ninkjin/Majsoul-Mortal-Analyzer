@@ -28,6 +28,7 @@ $include = @(
   "mj_model",
   "mortal",
   "tools",
+  "scripts",
   "log-viewer",
   "README.md",
   "LICENSE",
