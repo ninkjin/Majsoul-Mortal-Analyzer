@@ -21,6 +21,7 @@ class PortablePackagingTest(unittest.TestCase):
         self.assertIn("-m pip install maturin", setup)
         self.assertIn("Remove-StagedBuildTool", package)
         self.assertIn("Get-Command tar.exe", package)
+        self.assertIn("zip:hdrcharset=UTF-8", package)
 
 
 if __name__ == "__main__":
