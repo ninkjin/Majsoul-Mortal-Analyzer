@@ -30,7 +30,8 @@ class AnalyzerHtmlTest(unittest.TestCase):
 
         self.assertIn('id="fetch-mode"', html)
         self.assertIn('<option value="remote" selected>ninklang.tech 在线获取（推荐）</option>', html)
-        self.assertIn('<option value="tensoul">tensoul 本地账号密码获取</option>', html)
+        self.assertIn('<option value="tensoul">tensoul 本地账号密码获取（仅四麻）</option>', html)
+        self.assertIn("仅支持四麻东风战或半庄", html)
         self.assertIn("fetch_method: fetchModeSelect.value", html)
         self.assertNotIn("maj.gg", html)
         self.assertNotIn("https://mjai.ekyu.moe/zh-cn.html", html)

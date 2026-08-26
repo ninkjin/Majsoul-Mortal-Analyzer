@@ -64,7 +64,7 @@ class FetchMethodTest(unittest.TestCase):
             self.assertEqual(captured["timeout"], reward_calculator.REVIEWER_TIMEOUT_SECONDS)
             self.assertEqual(list(root.glob(".*.tmp")), [])
 
-    def run_job_with_patches(self, fetch_method):
+    def run_job_with_patches(self, fetch_method, tensoul_source=None):
         calls = []
 
         def fake_remote(url, source_path, status_callback=None):
@@ -83,7 +83,13 @@ class FetchMethodTest(unittest.TestCase):
 
         def fake_tensoul(url, source_path, username=None, password=None):
             calls.append("tensoul")
-            source_path.write_text(json.dumps({"name": ["a", "b", "c", "d"]}), encoding="utf-8")
+            source_path.write_text(
+                json.dumps(
+                    tensoul_source
+                    or {"ratingc": "PF4", "name": ["a", "b", "c", "d"]}
+                ),
+                encoding="utf-8",
+            )
 
         def fake_convert(source_path, mjai_path, player_id):
             calls.append("convert")
@@ -133,6 +139,36 @@ class FetchMethodTest(unittest.TestCase):
 
         self.assertEqual(calls, ["tensoul", "convert"])
         self.assertEqual(job["status"], "done")
+
+    def test_tensoul_three_player_log_stops_before_reviewer_with_clear_message(self):
+        calls, job = self.run_job_with_patches(
+            "tensoul",
+            {
+                "ratingc": "PF3",
+                "name": ["a", "b", "c"],
+                "rule": {"disp": "三麻 铜之间"},
+            },
+        )
+
+        self.assertEqual(calls, ["tensoul"])
+        self.assertEqual(job["status"], "error")
+        self.assertEqual(job["error"], server.THREE_PLAYER_UNSUPPORTED_MESSAGE)
+
+    def test_three_player_detection_accepts_four_player_and_rejects_common_pf3_signals(self):
+        server.reject_unsupported_three_player({
+            "ratingc": "PF4",
+            "name": ["a", "b", "c", "d"],
+            "rule": {"disp": "四麻 东风"},
+        })
+        for source in (
+            {"ratingc": "PF3", "name": ["a", "b", "c", "d"]},
+            {"name": ["a", "b", "c"]},
+            {"name": ["a", "b", "c", "d"], "rule": {"disp": "三麻 东风"}},
+            {"name": ["a", "b", "c", "d"], "rule": {"disp": "3-Player East"}},
+        ):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(server.UnsupportedThreePlayerError, "暂不支持三麻"):
+                    server.reject_unsupported_three_player(source)
 
     def test_available_model_names_are_listed_from_model_folder(self):
         with tempfile.TemporaryDirectory() as tmp:

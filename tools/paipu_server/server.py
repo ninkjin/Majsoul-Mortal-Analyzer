@@ -24,6 +24,7 @@ PAIPU_JOBS_DIR = ROOT / "tmp" / "paipu_jobs"
 CURRENT_DATA_DIR = ROOT / "viewer-data"
 MODEL_DIR = ROOT / "mj_model"
 DEFAULT_MODEL_NAME = "mortal.pth"
+THREE_PLAYER_UNSUPPORTED_MESSAGE = "暂不支持三麻牌谱，请提交四麻东风战或半庄牌谱。"
 LEGACY_CURRENT_OUTPUT_NAMES = (
     "log.json",
     "mortal-output-p2-mapped.jsonl",
@@ -287,6 +288,25 @@ def load_source_data(source):
     return json.loads(Path(source).read_text(encoding="utf-8-sig"))
 
 
+class UnsupportedThreePlayerError(ValueError):
+    pass
+
+
+def reject_unsupported_three_player(source):
+    data = load_source_data(source)
+    names = data.get("name")
+    rating = str(data.get("ratingc") or "").strip().upper()
+    rule = data.get("rule")
+    display = str(rule.get("disp") or "") if isinstance(rule, dict) else ""
+    if (
+        rating == "PF3"
+        or (isinstance(names, list) and len(names) == 3)
+        or "三麻" in display
+        or "3-Player" in display
+    ):
+        raise UnsupportedThreePlayerError(THREE_PLAYER_UNSUPPORTED_MESSAGE)
+
+
 def tenhou_source_has_player_names(source):
     data = load_source_data(source)
     names = data.get("name") or []
@@ -463,6 +483,7 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
         elif fetch_method == "tensoul":
             set_job(job_id, step="使用 tensoul 账号密码获取", progress=20)
             download_with_tensoul(url, source_path, username=username, password=password)
+            reject_unsupported_three_player(source_path)
             player_id = resolve_player_id(source_path, player_id, player_name, paipu)
             set_job(job_id, player_id=player_id)
             set_job(job_id, step="转换为 mjai log.json", progress=45)
@@ -491,7 +512,11 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
             },
         )
     except Exception as exc:
-        error_text = f"{type(exc).__name__}: {exc}"
+        error_text = (
+            str(exc)
+            if isinstance(exc, UnsupportedThreePlayerError)
+            else f"{type(exc).__name__}: {exc}"
+        )
         traceback_text = traceback.format_exc()
         for secret in (username, password):
             if secret:
@@ -765,7 +790,7 @@ ANALYZER_HTML = """<!doctype html>
           获取方式
           <select id="fetch-mode">
             <option value="remote" selected>ninklang.tech 在线获取（推荐）</option>
-            <option value="tensoul">tensoul 本地账号密码获取</option>
+            <option value="tensoul">tensoul 本地账号密码获取（仅四麻）</option>
           </select>
         </label>
         <label>
@@ -853,7 +878,7 @@ ANALYZER_HTML = """<!doctype html>
       passwordInput.disabled = !tensoulMode;
       togglePasswordBtn.disabled = !tensoulMode;
       statusBox.textContent = tensoulMode
-        ? 'tensoul 模式会使用账号密码在本地获取牌谱。'
+        ? 'tensoul 模式会使用账号密码在本地获取牌谱，仅支持四麻东风战或半庄。'
         : '在线模式通过 ninklang.tech 获取牌谱，不需要输入雀魂账号密码。';
     }
 
