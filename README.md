@@ -94,13 +94,15 @@ state['current_dqn']
 
 默认方式。它会把雀魂分享链接提交到自建的 [ninklang.tech](https://ninklang.tech/) 牌谱服务，等待后端获取并转换为 Tenhou 6 JSON，再交给本机 Mortal 分析。使用者不需要输入自己的雀魂账号密码。
 
-程序接口使用可撤销的 API Key。复制示例配置并填写管理员后台创建的 Mortal 专用密钥：
+公开版默认使用 ninklang.tech 的匿名桌面接口，不需要 API Key 或验证码，下载后可以直接使用。匿名请求受每 IP、未完成任务数和全局每日额度限制。
+
+如果你是服务管理员并希望使用独立的受信任程序额度，可以复制示例配置并填写管理员后台创建的专用 API Key：
 
 ```powershell
 Copy-Item .\paipu-service.example.json .\paipu-service.local.json
 ```
 
-`paipu-service.local.json` 已被 Git 忽略，不会进入源码提交或便携包。也可以改用环境变量 `MORTAL_PAIPU_API_KEY` 和 `MORTAL_PAIPU_SERVICE_URL`。API Key 只用于调用牌谱服务，不是雀魂账号凭据。
+`paipu-service.local.json` 已被 Git 忽略，不会进入源码提交或便携包。也可以改用环境变量 `MORTAL_PAIPU_API_KEY` 和 `MORTAL_PAIPU_SERVICE_URL`。没有配置 Key 时会自动使用匿名桌面接口；API Key 只用于调用牌谱服务，不是雀魂账号凭据。
 
 不要把真实 API Key 写入源码、示例文件或公开发布包。桌面客户端内置的共享密钥始终可以被提取；如果以后要向大量用户分发，应给它单独设置限流，并保留随时撤销、轮换的能力。
 

@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,17 @@ class PortablePackagingTest(unittest.TestCase):
         self.assertIn("Remove-StagedBuildTool", package)
         self.assertIn("Get-Command tar.exe", package)
         self.assertIn("zip:hdrcharset=UTF-8", package)
+
+    def test_public_release_defaults_to_anonymous_desktop_access(self):
+        example = json.loads(
+            (ROOT / "paipu-service.example.json").read_text(encoding="utf-8-sig")
+        )
+        fetcher = (ROOT / "tools" / "paipu_server" / "remote_service_fetcher.py").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertEqual(example["api_key"], "")
+        self.assertIn("/api/v1/desktop/requests", fetcher)
 
 
 if __name__ == "__main__":
