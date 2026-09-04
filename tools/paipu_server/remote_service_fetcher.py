@@ -83,11 +83,8 @@ def load_remote_service_config():
     service_url = service_url or str(file_config.get("service_url") or DEFAULT_SERVICE_URL)
     api_key = os.environ.get("MORTAL_PAIPU_API_KEY", "").strip()
     api_key = api_key or str(file_config.get("api_key") or "").strip()
-    if not api_key or not api_key.startswith("pk_") or len(api_key) < 20:
-        raise RemoteServiceError(
-            "远程牌谱服务尚未配置 API Key。请设置 MORTAL_PAIPU_API_KEY，"
-            "或在项目目录创建 paipu-service.local.json。"
-        )
+    if api_key and (not api_key.startswith("pk_") or len(api_key) < 20):
+        raise RemoteServiceError("远程牌谱服务 API Key 格式无效。")
     return RemoteServiceConfig(_normalized_service_url(service_url), api_key)
 
 
@@ -151,12 +148,14 @@ def _request_json(
     timeout=DEFAULT_REQUEST_TIMEOUT,
     max_bytes=MAX_METADATA_BYTES,
     extra_headers=None,
+    authorization_scheme="Bearer",
 ):
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {api_key}",
         "User-Agent": "Mortal-paipu-analyzer/2.0",
     }
+    if api_key:
+        headers["Authorization"] = f"{authorization_scheme} {api_key}"
     if extra_headers:
         headers.update(extra_headers)
     data = None
@@ -270,18 +269,39 @@ def fetch_remote_tenhou(
     if not math.isfinite(wait_seconds) or wait_seconds <= 0:
         raise RemoteServiceError("远程牌谱服务等待时间无效。")
     deadline = clock() + max(1, wait_seconds)
-    idempotency_key = str(uuid4())
-    create_url = f"{config.service_url}/api/v1/client/requests"
-    payload = _request_json_with_retries(
-        create_url,
-        config.api_key,
-        method="POST",
-        body={"share_url": share_url},
-        extra_headers={"Idempotency-Key": idempotency_key},
-        sleep=sleep,
-        clock=clock,
-        deadline=deadline,
-    )
+    if config.api_key:
+        create_url = f"{config.service_url}/api/v1/client/requests"
+        payload = _request_json_with_retries(
+            create_url,
+            config.api_key,
+            method="POST",
+            body={"share_url": share_url},
+            extra_headers={"Idempotency-Key": str(uuid4())},
+            sleep=sleep,
+            clock=clock,
+            deadline=deadline,
+        )
+        request_credential = config.api_key
+        authorization_scheme = "Bearer"
+    else:
+        create_url = f"{config.service_url}/api/v1/desktop/requests"
+        payload = _request_json_with_retries(
+            create_url,
+            "",
+            method="POST",
+            body={"share_url": share_url},
+            sleep=sleep,
+            clock=clock,
+            deadline=deadline,
+        )
+        request_credential = str(payload.get("request_token") or "").strip()
+        if (
+            not request_credential.startswith("rq_")
+            or len(request_credential) < 20
+            or len(request_credential) > 256
+        ):
+            raise RemoteServiceError("远程牌谱服务没有返回有效的任务令牌。")
+        authorization_scheme = "Request"
     request_id = str(payload.get("request_id") or "").strip()
     if not request_id:
         raise RemoteServiceError("远程牌谱服务没有返回 request_id。")
@@ -307,7 +327,8 @@ def fetch_remote_tenhou(
         status_url = f"{config.service_url}/api/v1/requests/{urllib.parse.quote(request_id, safe='')}"
         payload = _request_json_with_retries(
             status_url,
-            config.api_key,
+            request_credential,
+            authorization_scheme=authorization_scheme,
             sleep=sleep,
             clock=clock,
             deadline=deadline,
@@ -316,7 +337,8 @@ def fetch_remote_tenhou(
     result_url = f"{config.service_url}/api/v1/requests/{urllib.parse.quote(request_id, safe='')}/result"
     result = _request_json_with_retries(
         result_url,
-        config.api_key,
+        request_credential,
+        authorization_scheme=authorization_scheme,
         timeout=30,
         max_bytes=MAX_RESULT_BYTES,
         sleep=sleep,

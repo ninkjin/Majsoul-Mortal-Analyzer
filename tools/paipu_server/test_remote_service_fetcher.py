@@ -45,7 +45,7 @@ class RemoteServiceConfigTest(unittest.TestCase):
         self.assertEqual(config.service_url, "https://ninklang.tech")
         self.assertEqual(config.api_key, "pk_" + "b" * 32)
 
-    def test_rejects_missing_api_key(self):
+    def test_missing_api_key_uses_public_desktop_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "missing.json"
             environment = {
@@ -54,11 +54,67 @@ class RemoteServiceConfigTest(unittest.TestCase):
                 "MORTAL_PAIPU_SERVICE_URL": "https://ninklang.tech",
             }
             with patch.dict(os.environ, environment, clear=False):
-                with self.assertRaisesRegex(remote.RemoteServiceError, "API Key"):
+                config = remote.load_remote_service_config()
+
+        self.assertEqual(config.api_key, "")
+
+    def test_rejects_invalid_nonempty_api_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            environment = {
+                "MORTAL_PAIPU_CONFIG": str(Path(tmp) / "missing.json"),
+                "MORTAL_PAIPU_API_KEY": "not-a-real-key",
+                "MORTAL_PAIPU_SERVICE_URL": "https://ninklang.tech",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with self.assertRaisesRegex(remote.RemoteServiceError, "格式无效"):
                     remote.load_remote_service_config()
 
 
 class RemoteServiceFetchTest(unittest.TestCase):
+    def test_public_desktop_create_poll_and_download_without_api_key(self):
+        result = {
+            "ver": "2.3",
+            "name": ["a", "b", "c", "d"],
+            "rule": {"disp": "四人南"},
+            "log": [],
+            "_target_actor": 1,
+        }
+        responses = [
+            {
+                "request_id": "request-public-1",
+                "request_token": "rq_" + "t" * 32,
+                "status": "queued",
+                "poll_after_ms": 1,
+            },
+            {"request_id": "request-public-1", "status": "ready", "poll_after_ms": 1},
+            result,
+        ]
+        calls = []
+
+        def fake_request(url, api_key, **kwargs):
+            calls.append((url, api_key, kwargs))
+            return responses.pop(0)
+
+        config = remote.RemoteServiceConfig("https://ninklang.tech", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "record.json"
+            with (
+                patch.object(remote, "load_remote_service_config", return_value=config),
+                patch.object(remote, "_request_json", side_effect=fake_request),
+            ):
+                remote.fetch_remote_tenhou(
+                    "https://game.maj-soul.com/1/?paipu=example",
+                    out_path,
+                    sleep=lambda _seconds: None,
+                )
+            saved = json.loads(out_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["_target_actor"], 1)
+        self.assertTrue(calls[0][0].endswith("/api/v1/desktop/requests"))
+        self.assertEqual(calls[0][1], "")
+        self.assertEqual(calls[1][2]["authorization_scheme"], "Request")
+        self.assertEqual(calls[2][2]["authorization_scheme"], "Request")
+
     def test_create_poll_download_and_write_tenhou_json(self):
         result = {
             "ver": "2.3",
