@@ -127,6 +127,10 @@ tmp/paipu_jobs/
 
 为避免多个 PyTorch 推理进程争抢 CPU、内存并互相覆盖当前复盘，本地服务会按提交顺序串行分析；除正在运行的任务外，最多保留 10 个待处理任务。队列已满时页面会提示稍后重试。
 
+分析过程中刷新页面会恢复当前任务进度；连接暂时中断后可以点击“继续查询任务”，无需重新提交。本地服务重启后，未完成任务不会继续执行，可先检查历史记录，再重新分析。浏览器只保存用于恢复进度的任务编号，不保存账号密码。
+
+复盘页在窗口变小时会整体等比缩放，牌、侧栏和间距保持相同比例；恢复最大化后回到原来的显示比例。
+
 ## 便携运行环境
 
 如果不想依赖 Docker Desktop，可以用脚本检查并补齐本地 `.conda` 运行环境：
@@ -150,6 +154,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
 ## 开发验证
 
 提交代码前可以运行以下检查：
+
+安装 Node.js 后，Python 测试还会执行前端 JavaScript 行为回归，覆盖杠牌、红五、动作比较、差异跳转、空状态和任务恢复。Node.js 仅用于开发测试，用户运行便携版不需要安装。
 
 ```powershell
 python -m unittest discover -s .\tools\paipu_server -p "test_*.py"

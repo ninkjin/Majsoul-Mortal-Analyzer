@@ -60,7 +60,7 @@ class AnalyzerHtmlTest(unittest.TestCase):
         self.assertIn("async function poll(jobId, failures = 0)", html)
         self.assertIn("nextFailures <= 5", html)
         self.assertIn("setTimeout(() => poll(jobId, nextFailures), delay)", html)
-        self.assertIn("startBtn.disabled = false", html)
+        self.assertIn("resumeBtn.hidden = false", html)
         self.assertIn("passwordInput.value = ''", html)
 
 

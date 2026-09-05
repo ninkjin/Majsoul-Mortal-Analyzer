@@ -577,6 +577,7 @@ ANALYZER_HTML = """<!doctype html>
   <title>雀魂牌谱一键分析</title>
   <style>
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       min-height: 100vh;
@@ -742,6 +743,7 @@ ANALYZER_HTML = """<!doctype html>
       color: #687276;
       font-weight: 600;
     }
+    .history-item > span:first-child { min-width: 0; overflow-wrap: anywhere; }
     .status {
       min-height: 62px;
       border: 1px solid #d8ceb2;
@@ -756,7 +758,8 @@ ANALYZER_HTML = """<!doctype html>
     pre { max-height: 180px; overflow: auto; margin: 0; padding: 10px; background: #fffdf7; border: 1px solid #d8ceb2; border-radius: 6px; font-size: 12px; }
     @media (max-width: 680px) {
       .grid, .credentials-grid, .action-grid { grid-template-columns: 1fr; }
-      button, a { width: 100%; }
+      #start, .row > button, .row > a { width: 100%; }
+      body { padding: 12px; }
     }
   </style>
 </head>
@@ -771,15 +774,15 @@ ANALYZER_HTML = """<!doctype html>
         雀魂分享链接
         <textarea id="url" placeholder="https://game.maj-soul.com/1/?paipu=260219-xxxx_xxxx"></textarea>
       </label>
-      <div class="credentials-grid">
+      <div class="credentials-grid" id="credentials" hidden>
         <label>
           雀魂账号 / 邮箱
-          <input id="username" autocomplete="username" placeholder="可留空，仅用于 tensoul 回退">
+          <input id="username" autocomplete="username" placeholder="请输入雀魂账号或邮箱">
         </label>
         <label>
           雀魂密码
           <span class="password-field">
-            <input id="password" type="password" autocomplete="current-password" placeholder="可留空，仅用于 tensoul 回退">
+            <input id="password" type="password" autocomplete="current-password" placeholder="请输入雀魂密码">
             <button class="password-toggle" id="toggle-password" type="button">显示</button>
           </span>
         </label>
@@ -811,9 +814,10 @@ ANALYZER_HTML = """<!doctype html>
         </label>
         <button id="start">开始分析</button>
       </div>
-      <div class="bar"><div class="fill" id="fill"></div></div>
-      <div class="status" id="status">等待输入链接。</div>
+      <div class="bar" id="progress" role="progressbar" aria-label="分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill" id="fill"></div></div>
+      <div class="status" id="status" role="status">等待输入链接。</div>
       <div class="row">
+        <button id="resume" hidden>继续查询任务</button>
         <a class="secondary" href="/mortal-output-viewer.html" target="_blank">打开复盘页</a>
       </div>
       <div class="history-panel">
@@ -829,7 +833,7 @@ ANALYZER_HTML = """<!doctype html>
           <div class="history-empty">正在读取历史记录...</div>
         </div>
       </div>
-      <pre id="detail">进度详情会显示在这里。</pre>
+      <details><summary>进度详情</summary><pre id="detail">进度详情会显示在这里。</pre></details>
     </section>
   </main>
   <script>
@@ -844,6 +848,38 @@ ANALYZER_HTML = """<!doctype html>
     const modelSelect = document.getElementById('model-name');
     const passwordInput = document.getElementById('password');
     const togglePasswordBtn = document.getElementById('toggle-password');
+    const resumeBtn = document.getElementById('resume');
+    const ACTIVE_JOB_KEY = 'mortal:active-job';
+    let activeJobId = '';
+    let submitting = false;
+    let pollTimer = null;
+
+    function savedJobId() {
+      let stored = '';
+      try { stored = sessionStorage.getItem(ACTIVE_JOB_KEY) || ''; } catch {}
+      const jobId = new URL(location.href).searchParams.get('job') || stored;
+      return /^[0-9a-f]{32}$/i.test(jobId) ? jobId : '';
+    }
+
+    function rememberJob(jobId) {
+      activeJobId = jobId;
+      try {
+        if (jobId) sessionStorage.setItem(ACTIVE_JOB_KEY, jobId);
+        else sessionStorage.removeItem(ACTIVE_JOB_KEY);
+      } catch {}
+      const url = new URL(location.href);
+      if (jobId) url.searchParams.set('job', jobId);
+      else url.searchParams.delete('job');
+      history.replaceState(null, '', url);
+      updateFetchModeUi();
+    }
+
+    function finishTask() {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+      resumeBtn.hidden = true;
+      rememberJob('');
+    }
 
     togglePasswordBtn.onclick = () => {
       const shouldShow = passwordInput.type === 'password';
@@ -853,7 +889,9 @@ ANALYZER_HTML = """<!doctype html>
     };
 
     function setProgress(job) {
-      fill.style.width = `${job.progress || 0}%`;
+      const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+      fill.style.width = `${progress}%`;
+      document.getElementById('progress').setAttribute('aria-valuenow', progress);
       statusBox.textContent = `${job.step || '处理中'} (${job.progress || 0}%)`;
       detail.textContent = JSON.stringify(job, null, 2);
     }
@@ -873,11 +911,15 @@ ANALYZER_HTML = """<!doctype html>
 
     function updateFetchModeUi() {
       const tensoulMode = fetchModeSelect.value === 'tensoul';
-      startBtn.textContent = '开始分析';
-      document.getElementById('username').disabled = !tensoulMode;
-      passwordInput.disabled = !tensoulMode;
-      togglePasswordBtn.disabled = !tensoulMode;
-      statusBox.textContent = tensoulMode
+      const busy = submitting || Boolean(activeJobId);
+      startBtn.textContent = busy ? '分析进行中' : '开始分析';
+      startBtn.disabled = busy;
+      for (const field of [document.getElementById('url'), fetchModeSelect, modelSelect, playerSelect]) field.disabled = busy;
+      document.getElementById('credentials').hidden = !tensoulMode;
+      document.getElementById('username').disabled = busy || !tensoulMode;
+      passwordInput.disabled = busy || !tensoulMode;
+      togglePasswordBtn.disabled = busy || !tensoulMode;
+      if (!busy) statusBox.textContent = tensoulMode
         ? 'tensoul 模式会使用账号密码在本地获取牌谱，仅支持四麻东风战或半庄。'
         : '在线模式通过 ninklang.tech 获取牌谱，不需要输入雀魂账号密码。';
     }
@@ -898,7 +940,7 @@ ANALYZER_HTML = """<!doctype html>
         }
       } catch (error) {
         modelSelect.innerHTML = '<option value="mortal.pth">mortal.pth</option>';
-        statusBox.textContent = `读取模型列表失败：${error.message}`;
+        if (!activeJobId && !submitting) statusBox.textContent = `读取模型列表失败：${error.message}`;
       }
     }
 
@@ -944,17 +986,26 @@ ANALYZER_HTML = """<!doctype html>
 
     async function openHistory(jobId) {
       statusBox.textContent = '正在切换到历史复盘...';
-      const res = await fetch('/api/use-history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: jobId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        statusBox.textContent = data.error || `HTTP ${res.status}`;
-        return;
+      try {
+        const res = await fetch('/api/use-history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: jobId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const error = new Error(data.error || `HTTP ${res.status}`);
+          error.status = res.status;
+          throw error;
+        }
+        if (jobId === activeJobId) finishTask();
+        window.location.href = data.viewer || '/mortal-output-viewer.html';
+        return true;
+      } catch (error) {
+        if (jobId === activeJobId && [400, 404].includes(error.status)) finishTask();
+        statusBox.textContent = `无法打开历史复盘：${error.message}`;
+        return false;
       }
-      window.location.href = data.viewer || '/mortal-output-viewer.html';
     }
 
     async function deleteHistory(jobId) {
@@ -974,41 +1025,63 @@ ANALYZER_HTML = """<!doctype html>
     }
 
     async function poll(jobId, failures = 0) {
+      if (jobId !== activeJobId) return;
       try {
         const res = await fetch(`/api/status?job_id=${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        if (jobId !== activeJobId) return;
+        if (res.status === 404) {
+          finishTask();
+          statusBox.textContent = '任务已不可用，本地服务可能已重启。请先查看历史记录；没有完成记录时可重新分析。';
+          loadHistory();
+          return;
+        }
         const job = await res.json();
         if (!res.ok) throw new Error(job.error || `HTTP ${res.status}`);
+        if (!['queued', 'running', 'done', 'error'].includes(job.status)) throw new Error('任务状态无效');
         setProgress(job);
         if (job.status === 'done') {
           statusBox.textContent = '分析完成，正在打开复盘页。';
           loadHistory();
-          window.location.href = job.viewer || '/mortal-output-viewer.html';
+          if (!await openHistory(jobId)) {
+            if (activeJobId === jobId) {
+              statusBox.textContent += '。分析已完成，可点击“继续查询任务”重试。';
+              resumeBtn.hidden = false;
+              resumeBtn.disabled = false;
+            } else {
+              statusBox.textContent += '。结果可能已清理，请重新分析或选择其他历史记录。';
+            }
+          }
           return;
         }
         if (job.status === 'error') {
+          finishTask();
           statusBox.textContent = job.error || '分析失败';
-          startBtn.disabled = false;
           return;
         }
-        setTimeout(() => poll(jobId, 0), 1000);
+        pollTimer = setTimeout(() => poll(jobId, 0), 1000);
       } catch (error) {
+        if (jobId !== activeJobId) return;
         const nextFailures = failures + 1;
         if (nextFailures <= 5) {
           const delay = Math.min(1000 * (2 ** (nextFailures - 1)), 5000);
           statusBox.textContent = `状态连接暂时中断，${Math.ceil(delay / 1000)} 秒后重试...`;
           detail.textContent = String(error.stack || error);
-          setTimeout(() => poll(jobId, nextFailures), delay);
+          pollTimer = setTimeout(() => poll(jobId, nextFailures), delay);
           return;
         }
-        statusBox.textContent = `无法读取任务状态：${error.message}`;
+        statusBox.textContent = `无法读取任务状态：${error.message}。原任务可能仍在运行，请点击“继续查询任务”。`;
         detail.textContent = String(error.stack || error);
-        startBtn.disabled = false;
+        resumeBtn.hidden = false;
+        resumeBtn.disabled = false;
       }
     }
 
     startBtn.onclick = async () => {
-      startBtn.disabled = true;
+      if (submitting || activeJobId) return;
+      submitting = true;
+      updateFetchModeUi();
       fill.style.width = '0%';
+      document.getElementById('progress').setAttribute('aria-valuenow', '0');
       detail.textContent = '';
       try {
         statusBox.textContent = '提交任务中...';
@@ -1026,14 +1099,26 @@ ANALYZER_HTML = """<!doctype html>
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!/^[0-9a-f]{32}$/i.test(data.job_id || '')) throw new Error('没有收到有效的任务编号');
         passwordInput.value = '';
+        submitting = false;
+        rememberJob(data.job_id);
         poll(data.job_id, 0);
         loadHistory();
       } catch (error) {
+        submitting = false;
+        updateFetchModeUi();
         statusBox.textContent = error.message;
         detail.textContent = String(error.stack || error);
-        startBtn.disabled = false;
       }
+    };
+
+    resumeBtn.onclick = () => {
+      if (!activeJobId) return;
+      clearTimeout(pollTimer);
+      resumeBtn.hidden = true;
+      resumeBtn.disabled = true;
+      poll(activeJobId, 0);
     };
 
     // Drag-to-scroll for history list
@@ -1082,6 +1167,12 @@ ANALYZER_HTML = """<!doctype html>
     updateFetchModeUi();
     loadModels();
     loadHistory();
+    const previousJobId = savedJobId();
+    if (previousJobId) {
+      rememberJob(previousJobId);
+      statusBox.textContent = '正在恢复上次分析的进度...';
+      poll(previousJobId, 0);
+    }
   </script>
 </body>
 </html>"""
