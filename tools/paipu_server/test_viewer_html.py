@@ -18,8 +18,8 @@ class ViewerHtmlTest(unittest.TestCase):
         html = VIEWER_HTML.read_text(encoding="utf-8")
 
         self.assertIn("grid-template-columns: 240px minmax(600px, 1fr) 340px", html)
-        self.assertIn("@media (max-width: 1450px)", html)
-        self.assertIn("@media (max-width: 1220px)", html)
+        self.assertIn("@container viewer (max-width: 1450px)", html)
+        self.assertIn("@container viewer (max-width: 1220px)", html)
         self.assertIn("white-space: nowrap", html)
 
     def test_settlement_is_gated_by_current_event_index(self):
@@ -56,7 +56,7 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertIn("fetch('viewer-data/mortal-output-p2-mapped.jsonl'", html)
         self.assertIn("fetch('viewer-data/majsoul-tenhou-current.json'", html)
         self.assertIn("fetch('viewer-data/mortal-viewer-config.json'", html)
-        self.assertIn("viewer-data/log.json + viewer-data/mortal-output-p2-mapped.jsonl", html)
+        self.assertIn("await readViewerJsonl(logRes, '对局数据')", html)
         self.assertNotIn("2026_2_19_Gold_Room_South.json", html)
 
     def test_post_riichi_forced_draw_discards_are_not_ai_choice_nodes(self):
