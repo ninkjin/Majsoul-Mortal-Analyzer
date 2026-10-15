@@ -3,9 +3,9 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
-set "PYTHON=%~dp0.conda\python.exe"
-if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\python.exe"
+set "PYTHON=%~dp0runtime\python.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\Scripts\python.exe"
+if not exist "%PYTHON%" set "PYTHON=%~dp0.conda\python.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0.conda\pythonw.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\pythonw.exe"
 if not exist "%PYTHON%" set "PYTHON=%~dp0runtime\Scripts\pythonw.exe"
@@ -45,6 +45,11 @@ if errorlevel 1 (
 "%PYTHON%" -c "import numpy; print('  numpy: ' + numpy.__version__)" 2>nul
 if errorlevel 1 (
   echo   numpy: 未安装
+  set MISSING=1
+)
+"%PYTHON%" -c "import UnityPy; print('  UnityPy: OK')" 2>nul
+if errorlevel 1 (
+  echo   UnityPy: 未安装
   set MISSING=1
 )
 

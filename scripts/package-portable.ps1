@@ -10,7 +10,7 @@ if (-not (Test-Path $python)) {
 if (-not (Test-Path $python)) {
   throw "portable Python was not found. Prepare .conda\python.exe first."
 }
-& $python -c "import torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; print('portable source deps ok')"
+& $python -c "import torch, mahjong, tensoul, numpy, UnityPy; from libriichi.mjai import Bot; print('portable source deps ok')"
 if ($LASTEXITCODE -ne 0) {
   throw "portable source dependency check failed."
 }
@@ -66,7 +66,7 @@ $stagedPython = Join-Path $stagedRuntime "python.exe"
 if (-not (Test-Path $stagedPython)) {
   $stagedPython = Join-Path $stagedRuntime "Scripts\python.exe"
 }
-& $stagedPython -B -c "import importlib.util, torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; assert importlib.util.find_spec('maturin') is None; print('staged runtime deps ok')"
+& $stagedPython -B -c "import importlib.util, torch, mahjong, tensoul, numpy, UnityPy; from libriichi.mjai import Bot; assert importlib.util.find_spec('maturin') is None; print('staged runtime deps ok')"
 if ($LASTEXITCODE -ne 0) {
   throw "staged runtime dependency check failed."
 }

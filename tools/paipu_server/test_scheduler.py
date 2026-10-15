@@ -4,12 +4,36 @@ from pathlib import Path
 from unittest.mock import patch
 
 import sys
+import io
+from contextlib import redirect_stderr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import server
 
 
 class AnalysisSchedulerTest(unittest.TestCase):
+    def test_base_exception_marks_job_failed_and_worker_continues(self):
+        class ThirdPartyFailure(BaseException):
+            pass
+
+        second_finished = threading.Event()
+
+        def target(job_id):
+            if job_id == "broken":
+                raise ThirdPartyFailure("private-password")
+            second_finished.set()
+
+        jobs = {"broken": {"status": "running", "progress": 20}}
+        captured = io.StringIO()
+        with patch.object(server, "JOBS", jobs), redirect_stderr(captured):
+            scheduler = server.AnalysisScheduler(target)
+            scheduler.submit("broken")
+            scheduler.submit("next")
+            self.assertTrue(second_finished.wait(timeout=2))
+        self.assertEqual(jobs["broken"]["status"], "error")
+        self.assertNotIn("private-password", str(jobs) + captured.getvalue())
+        self.assertTrue(scheduler._worker.is_alive())
+
     def test_jobs_run_in_submission_order_without_overlap(self):
         first_started = threading.Event()
         release_first = threading.Event()

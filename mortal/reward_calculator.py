@@ -1,6 +1,6 @@
 import argparse
 import asyncio
-import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -56,17 +56,9 @@ def _endpoint_from_clientgate_routes(payload):
     return f'{scheme}://{domain}/gateway'
 
 
-async def download_majsoul_tenhou_log(url, out_file, username=None, password=None):
-    try:
-        import aiohttp
-        from ms.base import MSRPCChannel
-        from ms.rpc import Lobby
-        from tensoul import MajsoulPaipuDownloader
-    except ImportError as exc:
-        raise RuntimeError(
-            'missing dependency "tensoul"; install it with: pip install tensoul'
-        ) from exc
-
+async def download_majsoul_tenhou_log(
+    url, out_file, username=None, password=None, status_callback=None,
+):
     record_uuid, _ = parse_majsoul_paipu_url(url)
     username = username or os.environ.get('MAJSOUL_USERNAME')
     password = password or os.environ.get('MAJSOUL_PASSWORD')
@@ -76,106 +68,18 @@ async def download_majsoul_tenhou_log(url, out_file, username=None, password=Non
             'MAJSOUL_USERNAME and MAJSOUL_PASSWORD.'
         )
 
-    downloader = MajsoulPaipuDownloader()
-
-    async def fetch_json_with_retry(session, request_url, label, attempts=3):
-        last_error = None
-        for attempt in range(1, attempts + 1):
-            try:
-                async with session.get(request_url) as res:
-                    res.raise_for_status()
-                    return await res.json()
-            except (asyncio.TimeoutError, OSError, aiohttp.ClientError) as exc:
-                last_error = exc
-                print(
-                    f'{label} failed ({attempt}/{attempts}): '
-                    f'{type(exc).__name__}: {exc}',
-                    file=sys.stderr,
-                    flush=True,
-                )
-                if attempt < attempts:
-                    await asyncio.sleep(attempt)
-        raise RuntimeError(
-            f'连接雀魂服务器超时：{label}。请稍后重试，或检查网络/代理。'
-        ) from last_error
-
-    async def connect_with_current_config():
-        print('connecting to Mahjong Soul...', file=sys.stderr, flush=True)
-        timeout = aiohttp.ClientTimeout(total=20, connect=10, sock_connect=10, sock_read=10)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            version_res = await fetch_json_with_retry(
-                session,
-                f'{downloader.MS_HOST}/1/version.json',
-                '读取雀魂版本信息',
-            )
-            downloader.version = version_res['version']
-            downloader.version_to_force = downloader.version.replace('.w', '')
-            print(f'version: {downloader.version}', file=sys.stderr, flush=True)
-
-            config_url = f'{downloader.MS_HOST}/1/v{downloader.version}/config.json'
-            config = await fetch_json_with_retry(session, config_url, '读取雀魂网关配置')
-            gateway_group = config['ip'][0]
-            if 'region_urls' in gateway_group:
-                routes = [item['url'] for item in gateway_group['region_urls']]
-            else:
-                routes = [item['url'] for item in gateway_group['gateways']]
-
-            last_error = None
-            for route_url in routes:
-                try:
-                    print(f'route: {route_url}', file=sys.stderr, flush=True)
-                    gateway_url = (
-                        f'{route_url}/api/clientgate/routes'
-                        f'?platform=Web&version={downloader.version}&lang=chs&randv=1'
-                    )
-                    routes_res = await fetch_json_with_retry(
-                        session,
-                        gateway_url,
-                        f'读取雀魂网关线路 {route_url}',
-                        attempts=2,
-                    )
-                    downloader.endpoint = _endpoint_from_clientgate_routes(routes_res)
-                    print(f'endpoint: {downloader.endpoint}', file=sys.stderr, flush=True)
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    print(
-                        f'route failed: {type(exc).__name__}: {exc}',
-                        file=sys.stderr,
-                        flush=True,
-                    )
-            else:
-                raise RuntimeError('无法检测雀魂网关线路，请稍后重试或切换 ninklang.tech 在线获取。') from last_error
-
-        downloader.channel = MSRPCChannel(downloader.endpoint)
-        downloader.lobby = Lobby(downloader.channel)
-        try:
-            await asyncio.wait_for(downloader.channel.connect(downloader.MS_HOST), timeout=30)
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError('连接雀魂网关超时，请稍后重试或检查网络/代理。') from exc
-
-    downloader._connect = connect_with_current_config
+    module_path = Path(__file__).with_name('tensoul_fetcher.py')
+    spec = importlib.util.spec_from_file_location('mortal_tensoul_fetcher', module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('无法加载本地牌谱获取组件。')
+    fetcher = importlib.util.module_from_spec(spec)
     try:
-        await asyncio.wait_for(downloader.start(), timeout=90)
-        print('logging in...', file=sys.stderr, flush=True)
-        await asyncio.wait_for(downloader.login(username, password), timeout=30)
-        print(f'downloading record {record_uuid}...', file=sys.stderr, flush=True)
-        log = await asyncio.wait_for(downloader.download(record_uuid), timeout=60)
-    finally:
-        await downloader.close()
-
-    out_path = Path(out_file)
-    print(f'writing tenhou log: {out_path}', file=sys.stderr, flush=True)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = out_path.with_name(f'.{out_path.name}.{uuid4().hex}.tmp')
-    try:
-        with temporary.open('w', encoding='utf-8') as output:
-            json.dump(log, output, ensure_ascii=False, indent=2)
-        temporary.replace(out_path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return out_path
+        spec.loader.exec_module(fetcher)
+    except ImportError as exc:
+        raise RuntimeError('本地获取依赖不完整，请运行“检查环境.cmd”修复。') from exc
+    return await fetcher.download(
+        record_uuid, out_file, username, password, status_callback=status_callback,
+    )
 
 
 def tenhou_log_to_mjai_log(in_file, out_file, player_id=0, reviewer_exe=None):

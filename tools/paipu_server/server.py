@@ -167,10 +167,12 @@ def convert_tenhou_to_mjai(tenhou_path, mjai_path, player_id):
     reward_calculator.tenhou_log_to_mjai_log(tenhou_path, mjai_path, player_id=player_id)
 
 
-def download_with_tensoul(url, tenhou_path, username=None, password=None):
+def download_with_tensoul(url, tenhou_path, username=None, password=None, status_callback=None):
     reward_calculator = _load_reward_calculator_module()
 
-    asyncio.run(reward_calculator.download_majsoul_tenhou_log(url, tenhou_path, username=username, password=password))
+    asyncio.run(reward_calculator.download_majsoul_tenhou_log(
+        url, tenhou_path, username=username, password=password, status_callback=status_callback,
+    ))
 
 
 def run_mortal_mapping(mjai_path, mapped_path, player_id, model_name=DEFAULT_MODEL_NAME):
@@ -482,7 +484,14 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
             convert_tenhou_to_mjai(source_path, mjai_path, player_id)
         elif fetch_method == "tensoul":
             set_job(job_id, step="使用 tensoul 账号密码获取", progress=20)
-            download_with_tensoul(url, source_path, username=username, password=password)
+
+            def update_local_status(step, progress):
+                set_job(job_id, step=step, progress=progress)
+
+            download_with_tensoul(
+                url, source_path, username=username, password=password,
+                status_callback=update_local_status,
+            )
             reject_unsupported_three_player(source_path)
             player_id = resolve_player_id(source_path, player_id, player_name, paipu)
             set_job(job_id, player_id=player_id)
@@ -511,7 +520,11 @@ def analyze_job(job_id, url, player_id, username=None, password=None, player_nam
                 "mapped": str(mapped_path),
             },
         )
-    except Exception as exc:
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException as exc:
+        # tensoul 0.1.8 derives its login/download errors directly from BaseException.
+        # This background-job boundary must publish a terminal state even for them.
         error_text = (
             str(exc)
             if isinstance(exc, UnsupportedThreePlayerError)
@@ -560,8 +573,20 @@ class AnalysisScheduler:
             args, kwargs = self._queue.get()
             try:
                 self._target(*args, **kwargs)
-            except Exception:
-                traceback.print_exc()
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except BaseException as exc:
+                # A failed plugin must not strand this job or kill the queue worker.
+                job_id = args[0] if args else kwargs.get("job_id")
+                with JOBS_LOCK:
+                    job = JOBS.get(job_id) if isinstance(job_id, str) else None
+                    if job is not None and job.get("status") not in ("done", "error"):
+                        job.update(
+                            status="error", step="失败", updated_at=time.time(),
+                            error=f"本地任务意外中断（{type(exc).__name__}），请重试。",
+                        )
+                # Never print target arguments or raw third-party exception bodies.
+                sys.stderr.write(f"analysis worker recovered: {type(exc).__name__}\n")
             finally:
                 self._queue.task_done()
 

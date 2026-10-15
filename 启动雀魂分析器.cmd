@@ -26,7 +26,7 @@ if not exist "%PYTHON%" (
 )
 
 set "MISSING_DEPS="
-"%PYTHON%" -c "import torch, mahjong, tensoul, numpy" >nul 2>nul
+"%PYTHON%" -c "import torch, mahjong, tensoul, numpy, UnityPy" >nul 2>nul
 if errorlevel 1 set "MISSING_DEPS=1"
 
 if defined MISSING_DEPS (

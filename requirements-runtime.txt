@@ -5,3 +5,4 @@ tqdm
 tensorboard
 mahjong
 tensoul
+UnityPy==1.25.3

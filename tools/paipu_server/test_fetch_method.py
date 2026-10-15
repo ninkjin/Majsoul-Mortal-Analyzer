@@ -11,6 +11,25 @@ import server
 
 
 class FetchMethodTest(unittest.TestCase):
+    def test_tensoul_base_exception_is_published_as_a_failed_job(self):
+        class LoginFailure(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = {"failed-job": {"status": "queued", "progress": 0}}
+            with (patch.object(server, "JOBS", jobs),
+                  patch.object(server, "PAIPU_JOBS_DIR", Path(tmp)),
+                  patch.object(server, "download_with_tensoul",
+                               side_effect=LoginFailure("private-account private-password 151"))):
+                server.analyze_job(
+                    "failed-job", "https://game.maj-soul.com/1/?paipu=dummy", 0,
+                    username="private-account", password="private-password", fetch_method="tensoul",
+                )
+            self.assertEqual(jobs["failed-job"]["status"], "error")
+            self.assertIn("151", jobs["failed-job"]["error"])
+            self.assertNotIn("private-password", str(jobs))
+            self.assertNotIn("private-account", str(jobs))
+
     def test_reward_calculator_is_loaded_from_mortal_file_path(self):
         module = server._load_reward_calculator_module()
 
@@ -81,8 +100,10 @@ class FetchMethodTest(unittest.TestCase):
             if status_callback:
                 status_callback("ready")
 
-        def fake_tensoul(url, source_path, username=None, password=None):
+        def fake_tensoul(url, source_path, username=None, password=None, status_callback=None):
             calls.append("tensoul")
+            if status_callback:
+                status_callback("登录雀魂（本地）", 30)
             source_path.write_text(
                 json.dumps(
                     tensoul_source

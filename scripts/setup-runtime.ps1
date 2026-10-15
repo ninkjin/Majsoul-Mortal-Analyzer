@@ -38,7 +38,7 @@ if (-not (Test-Path $builtDll)) {
 }
 Copy-Item -LiteralPath $builtDll -Destination (Join-Path $sitePackages "libriichi.pyd") -Force
 
-& $python -c "import torch, mahjong, tensoul, numpy; from libriichi.mjai import Bot; print('runtime deps ok')"
+& $python -c "import torch, mahjong, tensoul, numpy, UnityPy; from libriichi.mjai import Bot; print('runtime deps ok')"
 
 Write-Host ""
 Write-Host ".conda runtime source is ready: $python"
