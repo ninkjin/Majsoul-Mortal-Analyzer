@@ -52,6 +52,11 @@ if errorlevel 1 (
   echo   UnityPy: 未安装
   set MISSING=1
 )
+"%PYTHON%" -c "import cryptography; print('  cryptography: OK')" 2>nul
+if errorlevel 1 (
+  echo   cryptography: 未安装
+  set MISSING=1
+)
 
 if defined MISSING (
   echo.

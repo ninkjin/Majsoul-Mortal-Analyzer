@@ -169,12 +169,12 @@ def run_mortal_mapping(root, mjai_path, mapped_path, player_id, model_path=None)
         env["MORTAL_CFG"] = str(config_path)
         env["MORTAL_MODEL_PATH"] = str(model_path)
         pythonpath_parts = []
+        if env.get("PYTHONPATH"):
+            pythonpath_parts.append(env["PYTHONPATH"])
         site_packages = python_site_packages(local_python)
         if site_packages:
             pythonpath_parts.append(site_packages)
         pythonpath_parts.append(str(root / "mortal"))
-        if env.get("PYTHONPATH"):
-            pythonpath_parts.append(env["PYTHONPATH"])
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         cmd = local_command(root, local_python, player_id)
     else:

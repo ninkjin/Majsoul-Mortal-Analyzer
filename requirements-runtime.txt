@@ -6,3 +6,4 @@ tensorboard
 mahjong
 tensoul
 UnityPy==1.25.3
+cryptography==50.0.2

@@ -22,7 +22,7 @@ function page(source, options = {}) {
     replaceChildren(...children) { this.children = children; },
     insertAdjacentHTML(_position, value) { this.innerHTML += value; },
     setAttribute(key, value) { this.attributes[key] = String(value); },
-    addEventListener() {}, querySelector() { return null; },
+    listeners: {}, addEventListener(type, callback) { this.listeners[type] = callback; }, querySelector() { return null; },
   });
   const element = id => {
     if (!nodes.has(id)) nodes.set(id, makeElement());
@@ -57,9 +57,9 @@ function page(source, options = {}) {
       requests.push({ url, ...init });
       return options.fetch ? options.fetch(url, init) : response({});
     },
-    setTimeout(callback) { timers.set(++timerId, callback); return timerId; },
+    setTimeout(callback, delay = 0) { timers.set(++timerId, {callback, delay}); return timerId; },
     clearTimeout(id) { timers.delete(id); },
-    alert() {}, confirm: () => false,
+    alert() {}, confirm: options.confirm || (() => false),
   });
   const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\s+boot\((?:\d+)?\);\s*$/, '');
   vm.runInContext(script, context);
@@ -69,10 +69,10 @@ function page(source, options = {}) {
     get: expression => JSON.parse(vm.runInContext(`JSON.stringify(${expression})`, context)),
     flush: () => new Promise(resolve => setImmediate(resolve)),
     async tick() {
-      const first = timers.entries().next().value;
+      const first = [...timers.entries()].sort((a,b)=>a[1].delay-b[1].delay)[0];
       assert.ok(first, 'expected a pending retry');
       timers.delete(first[0]);
-      await first[1]();
+      await first[1].callback();
       await this.flush();
     },
   };
@@ -373,4 +373,87 @@ test('credentials are shown only in tensoul mode', () => {
   p.element('fetch-mode').value='tensoul';p.element('fetch-mode').onchange();
   assert.equal(p.element('credentials').hidden,false);
   assert.equal(p.element('password').disabled,false);
+});
+
+test('update notices are plain text and do not submit an update automatically', async () => {
+  const p=analyzer();await p.flush();
+  p.run("renderSoftwareUpdate({current_version:'2.2.0',state:'available',available_version:'2.2.1',notes:'<img src=x onerror=alert(1)>',message:'new',csrf_token:'test',busy:false})");
+  assert.equal(p.element('app-version').textContent,'v2.2.0');
+  assert.equal(p.element('update-notes').textContent,'<img src=x onerror=alert(1)>');
+  assert.equal(p.element('update-notes').innerHTML,'');
+  assert.equal(p.element('install-update').hidden,false);
+  await p.element('install-update').onclick();
+  assert.ok(!p.requests.some(r=>r.url==='/api/update/install'));
+});
+
+test('update installation blocks new analysis but a failed check does not', async () => {
+  const p=analyzer();await p.flush();
+  p.run("renderSoftwareUpdate({current_version:'2.2.0',state:'error',message:'offline',busy:false})");
+  assert.equal(p.element('start').disabled,false);
+  p.run("renderSoftwareUpdate({current_version:'2.2.0',state:'downloading',message:'downloading',busy:true})");
+  assert.equal(p.element('start').disabled,true);
+  await p.element('start').onclick();
+  assert.ok(!p.requests.some(r=>r.url==='/api/analyze'));
+  p.run("renderSoftwareUpdate({current_version:'2.2.0',state:'rolled_back',message:'restored',busy:false})");
+  assert.equal(p.element('start').disabled,false);
+  assert.equal(p.element('refresh-update').hidden,false);
+});
+
+test('active analysis prevents update even if update button is invoked', async () => {
+  const p=analyzer();await p.flush();
+  p.run("confirm=()=>true;activeJobId='current-analysis';renderSoftwareUpdate({current_version:'2.2.0',state:'available',available_version:'2.2.1',busy:false})");
+  await p.element('install-update').onclick();
+  assert.ok(!p.requests.some(r=>r.url==='/api/update/install'));
+  assert.equal(p.element('install-update').disabled,true);
+});
+
+test('confirmed update sends pinned version and process confirmation token once', async () => {
+  const p=page(html.analyzer,{confirm:()=>true,fetch:async(url)=>url==='/api/update/install'
+    ?response({current_version:'2.2.0',state:'downloading',busy:true}):response({})});
+  await p.flush();
+  p.run("renderSoftwareUpdate({current_version:'2.2.0',state:'available',available_version:'2.2.1',csrf_token:'test-confirmation',busy:false})");
+  await p.element('install-update').onclick();
+  await p.element('install-update').onclick();
+  const installs=p.requests.filter(r=>r.url==='/api/update/install');
+  assert.equal(installs.length,1);
+  assert.equal(installs[0].headers['X-Mortal-Update-Token'],'test-confirmation');
+  assert.deepEqual(JSON.parse(installs[0].body),{version:'2.2.1'});
+  assert.equal(p.element('start').disabled,true);
+});
+
+test('idle page observes a later background update without submitting analysis', async () => {
+  let state={current_version:'2.2.0',state:'current',message:'no update',busy:false,csrf_token:'test'};
+  const p=page(html.analyzer,{fetch:async(url)=>url.startsWith('/api/update/')?response(state):response({})});
+  await p.flush();
+  assert.equal([...p.timers.values()].filter(t=>t.delay===30000).length,1);
+  state={...state,state:'available',available_version:'2.2.1',message:'new update'};
+  await p.tick();
+  assert.equal(p.element('install-update').hidden,false);
+  assert.equal(p.element('software-update').open,true);
+  assert.equal(p.element('start').disabled,false);
+  assert.ok(!p.requests.some(r=>r.url==='/api/analyze'||r.url==='/api/update/install'));
+  assert.equal([...p.timers.values()].filter(t=>t.delay===30000).length,1);
+  p.element('software-update').open=false;
+  await p.tick();
+  assert.equal(p.element('software-update').open,false,'same update does not repeatedly reopen its notice');
+});
+
+test('background version checks do not block starting an analysis', async () => {
+  const p=analyzer();await p.flush();
+  p.run("renderSoftwareUpdate({current_version:'2.2.0',state:'checking',message:'checking',busy:false})");
+  assert.equal(p.element('start').disabled,false);
+  assert.equal(p.element('check-update').disabled,true);
+});
+
+test('offline update polling continues without blocking normal use', async () => {
+  const p=page(html.analyzer,{fetch:async(url)=>{
+    if(url.startsWith('/api/update/')) throw new Error('offline');
+    return response({});
+  }});
+  await p.flush();
+  const before=p.requests.filter(r=>r.url==='/api/update/status').length;
+  await p.tick();
+  assert.equal(p.requests.filter(r=>r.url==='/api/update/status').length,before+1);
+  assert.equal(p.element('start').disabled,false);
+  assert.equal([...p.timers.values()].filter(t=>t.delay===30000).length,1);
 });

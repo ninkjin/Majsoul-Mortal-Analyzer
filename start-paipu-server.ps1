@@ -17,4 +17,4 @@ if (-not (Test-Path $python)) {
 Write-Host "Starting local Mahjong Soul paipu analyzer..."
 Write-Host "Open: http://127.0.0.1:8765/paipu-analyzer.html"
 
-& $python .\tools\paipu_server\server.py --host 127.0.0.1 --port 8765
+& $python .\tools\paipu_server\update_bootstrap.py --host 127.0.0.1 --port 8765

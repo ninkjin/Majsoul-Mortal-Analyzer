@@ -1,12 +1,14 @@
 import argparse
 import asyncio
 import importlib.util
+import ipaddress
 import json
 import math
 import mimetypes
 import os
 import queue
 import re
+import secrets
 import sys
 import threading
 import time
@@ -40,6 +42,7 @@ MAX_SAFE_NAME_CHARS = 120
 MAX_REQUEST_BODY_BYTES = 64 * 1024
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+MAINTENANCE_LOCK = threading.RLock()
 CURRENT_OUTPUTS_LOCK = threading.Lock()
 _REWARD_CALCULATOR_MODULE = None
 PRIVATE_STATIC_FILES = {".env", "paipu-service.local.json"}
@@ -859,6 +862,17 @@ ANALYZER_HTML = """<!doctype html>
         </div>
       </div>
       <details><summary>进度详情</summary><pre id="detail">进度详情会显示在这里。</pre></details>
+      <details id="software-update">
+        <summary>软件更新（后台自动检查） <span id="app-version"></span></summary>
+        <div class="security-note" id="update-message" role="status">正在检查软件更新…</div>
+        <pre id="update-notes" hidden></pre>
+        <div class="row">
+          <button id="check-update" class="secondary" type="button">检查更新</button>
+          <button id="install-update" type="button" hidden>下载更新并重启</button>
+          <button id="refresh-update" class="secondary" type="button" hidden>刷新界面</button>
+        </div>
+        <div class="security-note">启动时及运行期间每小时自动检查，无需先分析牌谱。空闲时可直接更新；只有正在分析或排队时才需等待。安装仍需你确认，历史、模型与配置会保留。</div>
+      </details>
     </section>
   </main>
   <script>
@@ -877,7 +891,98 @@ ANALYZER_HTML = """<!doctype html>
     const ACTIVE_JOB_KEY = 'mortal:active-job';
     let activeJobId = '';
     let submitting = false;
+    let updateInProgress = false;
+    let softwareUpdate = null;
+    let softwareUpdateTimer = null;
+    let promptedUpdateVersion = '';
     let pollTimer = null;
+    function renderSoftwareUpdate(data) {
+      if (!data || typeof data.current_version !== 'string' || typeof data.state !== 'string') return;
+      const previousState = softwareUpdate?.state;
+      softwareUpdate = data;
+      document.getElementById('app-version').textContent = `v${data.current_version}`;
+      document.getElementById('update-message').textContent = data.message || '';
+      document.getElementById('update-notes').textContent = data.notes || '';
+      document.getElementById('update-notes').hidden = !data.notes;
+      document.getElementById('install-update').hidden = data.state !== 'available';
+      document.getElementById('install-update').disabled = submitting || Boolean(activeJobId) || Boolean(data.busy);
+      document.getElementById('check-update').disabled = data.state === 'checking' || Boolean(data.busy);
+      document.getElementById('refresh-update').hidden = !['done', 'rolled_back'].includes(data.state);
+      const newVersion = data.state === 'available' && data.available_version !== promptedUpdateVersion;
+      const newState = previousState !== data.state && (['done', 'rolled_back', 'recovery_required'].includes(data.state) || data.busy);
+      if (newVersion || newState) document.getElementById('software-update').open = true;
+      if (newVersion) promptedUpdateVersion = data.available_version;
+      const changed = updateInProgress !== Boolean(data.busy);
+      updateInProgress = Boolean(data.busy);
+      if (changed) updateFetchModeUi();
+    }
+
+    function scheduleSoftwareUpdateRead(delay = 30000, failures = 0) {
+      clearTimeout(softwareUpdateTimer);
+      softwareUpdateTimer = setTimeout(() => readSoftwareUpdate(failures), delay);
+    }
+
+    async function readSoftwareUpdate(failures = 0) {
+      clearTimeout(softwareUpdateTimer);
+      try {
+        const response = await fetch('/api/update/status', { cache: 'no-store' });
+        if (!response.ok) throw new Error('更新状态暂时不可用');
+        const data = await response.json();
+        if (typeof data.current_version !== 'string' || typeof data.state !== 'string') throw new Error('invalid update status');
+        renderSoftwareUpdate(data);
+        // Poll the local service only. GitHub checks are independently throttled and scheduled.
+        scheduleSoftwareUpdateRead(data.state === 'checking' || data.busy ? 2000 : 30000);
+        return true;
+      } catch {
+        if (updateInProgress && failures < 60) {
+          document.getElementById('update-message').textContent = '程序正在重启，等待重新连接…';
+          scheduleSoftwareUpdateRead(2000, failures + 1);
+        } else {
+          document.getElementById('update-message').textContent = updateInProgress
+            ? '暂未重新连接。请重新运行启动脚本；程序会检查并恢复未完成的更新。'
+            : '暂时无法检查更新，不影响正常分析。';
+          scheduleSoftwareUpdateRead(30000, failures + 1);
+        }
+        return false;
+      }
+    }
+
+    async function checkSoftwareUpdate() {
+      if (!await readSoftwareUpdate()) return;
+      if (!softwareUpdate || softwareUpdate.busy || softwareUpdate.state === 'checking') return;
+      try {
+        const response = await fetch('/api/update/check', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Mortal-Update-Token': softwareUpdate.csrf_token}, body: '{}',
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '暂时无法检查更新');
+        renderSoftwareUpdate(data);
+        scheduleSoftwareUpdateRead(data.state === 'checking' ? 2000 : 30000);
+      } catch (error) {
+        document.getElementById('update-message').textContent = error.message;
+      }
+    }
+
+    document.getElementById('check-update').onclick = checkSoftwareUpdate;
+    document.getElementById('refresh-update').onclick = () => location.reload();
+    document.getElementById('install-update').onclick = async () => {
+      if (!softwareUpdate || softwareUpdate.state !== 'available' || submitting || activeJobId || updateInProgress) return;
+      if (!confirm(`更新至 ${softwareUpdate.available_version} 并重启本地服务？历史牌谱、模型与配置将保留。`)) return;
+      document.getElementById('install-update').disabled = true;
+      try {
+        const response = await fetch('/api/update/install', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-Mortal-Update-Token': softwareUpdate.csrf_token},
+          body: JSON.stringify({version: softwareUpdate.available_version}),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '无法开始更新');
+        renderSoftwareUpdate(data);
+        scheduleSoftwareUpdateRead(2000);
+      } catch (error) {
+        document.getElementById('update-message').textContent = error.message;
+        document.getElementById('install-update').disabled = false;
+      }
+    };
 
     function savedJobId() {
       let stored = '';
@@ -936,14 +1041,15 @@ ANALYZER_HTML = """<!doctype html>
 
     function updateFetchModeUi() {
       const tensoulMode = fetchModeSelect.value === 'tensoul';
-      const busy = submitting || Boolean(activeJobId);
-      startBtn.textContent = busy ? '分析进行中' : '开始分析';
+      const busy = submitting || Boolean(activeJobId) || updateInProgress;
+      startBtn.textContent = updateInProgress ? '软件更新中' : (busy ? '分析进行中' : '开始分析');
       startBtn.disabled = busy;
       for (const field of [document.getElementById('url'), fetchModeSelect, modelSelect, playerSelect]) field.disabled = busy;
       document.getElementById('credentials').hidden = !tensoulMode;
       document.getElementById('username').disabled = busy || !tensoulMode;
       passwordInput.disabled = busy || !tensoulMode;
       togglePasswordBtn.disabled = busy || !tensoulMode;
+      document.getElementById('install-update').disabled = busy || softwareUpdate?.state !== 'available';
       if (!busy) statusBox.textContent = tensoulMode
         ? 'tensoul 模式会使用账号密码在本地获取牌谱，仅支持四麻东风战或半庄。'
         : '在线模式通过 ninklang.tech 获取牌谱，不需要输入雀魂账号密码。';
@@ -1102,7 +1208,7 @@ ANALYZER_HTML = """<!doctype html>
     }
 
     startBtn.onclick = async () => {
-      if (submitting || activeJobId) return;
+      if (submitting || activeJobId || updateInProgress) return;
       submitting = true;
       updateFetchModeUi();
       fill.style.width = '0%';
@@ -1192,6 +1298,7 @@ ANALYZER_HTML = """<!doctype html>
     updateFetchModeUi();
     loadModels();
     loadHistory();
+    checkSoftwareUpdate();
     const previousJobId = savedJobId();
     if (previousJobId) {
       rememberJob(previousJobId);
@@ -1206,6 +1313,24 @@ ANALYZER_HTML = """<!doctype html>
 class Handler(BaseHTTPRequestHandler):
     timeout = 10
     protocol_version = "HTTP/1.1"
+
+    def updater(self):
+        from app_updater import UpdateManager
+        with MAINTENANCE_LOCK:
+            if not hasattr(self.server, "app_updater"):
+                self.server.app_updater = UpdateManager(ROOT, self.server.shutdown,
+                                                       self.server.server_address[0], self.server.server_port)
+            return self.server.app_updater
+
+    def update_request_allowed(self, mutate=False):
+        if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+            self.send_json({"error": "软件更新仅限本机操作。"}, HTTPStatus.FORBIDDEN)
+            return False
+        if mutate and not secrets.compare_digest(self.headers.get("X-Mortal-Update-Token", "").encode("utf-8"), self.updater().token.encode("ascii")):
+            self.close_connection = True
+            self.send_json({"error": "更新确认已失效，请刷新页面。"}, HTTPStatus.FORBIDDEN)
+            return False
+        return True
 
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1303,6 +1428,18 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/paipu-analyzer.html"):
             self.send_text(ANALYZER_HTML)
             return
+        if parsed.path in ("/api/update/status", "/api/update/health"):
+            if not self.update_request_allowed():
+                return
+            updater = self.updater()
+            if parsed.path.endswith("/health"):
+                self.send_json({"version": updater.current["version"], "token": os.environ.get("MORTAL_UPDATE_HEALTH_TOKEN", ""), "pid": os.getpid()})
+            else:
+                state = updater.snapshot()
+                with JOBS_LOCK:
+                    state["analysis_busy"] = any(job.get("status") in ("queued", "running") for job in JOBS.values())
+                self.send_json(state)
+            return
         if parsed.path == "/api/status":
             qs = urllib.parse.parse_qs(parsed.query)
             job_id = qs.get("job_id", [""])[0]
@@ -1363,6 +1500,25 @@ class Handler(BaseHTTPRequestHandler):
         if self.reject_untrusted_request(include_origin=True):
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in ("/api/update/check", "/api/update/install"):
+            if not self.update_request_allowed(mutate=True):
+                return
+            try:
+                payload = self.read_json_body()
+                with MAINTENANCE_LOCK:
+                    updater = self.updater()
+                    if parsed.path.endswith("/check"):
+                        result = updater.check()
+                    else:
+                        with JOBS_LOCK:
+                            busy = any(job.get("status") in ("queued", "running") for job in JOBS.values())
+                        if busy:
+                            raise HttpRequestError("还有分析任务在运行或排队，请完成后再更新。", HTTPStatus.CONFLICT)
+                        result = updater.install(str(payload.get("version") or ""))
+                self.send_json(result)
+            except Exception as exc:
+                self.send_exception(exc)
+            return
         if parsed.path == "/api/use-history":
             try:
                 payload = self.read_json_body()
@@ -1410,26 +1566,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_exception(exc)
             return
 
-        job_id = uuid4().hex
-        with JOBS_LOCK:
-            JOBS[job_id] = {
-                "job_id": job_id,
-                "status": "queued",
-                "step": "排队中",
-                "progress": 0,
-                "created_at": time.time(),
-                "updated_at": time.time(),
-            }
-        submitted = ANALYSIS_SCHEDULER.submit(
-            job_id,
-            url,
-            player_id,
-            username,
-            password,
-            player_name,
-            fetch_method,
-            model_name,
-        )
+        with MAINTENANCE_LOCK:
+            if self.updater().snapshot()["busy"] or (ROOT / ".updates/pending.json").exists():
+                self.send_json({"error": "软件更新或恢复正在进行，请稍后再分析。"}, HTTPStatus.CONFLICT)
+                return
+            job_id = uuid4().hex
+            with JOBS_LOCK:
+                JOBS[job_id] = {
+                    "job_id": job_id,
+                    "status": "queued",
+                    "step": "排队中",
+                    "progress": 0,
+                    "created_at": time.time(),
+                    "updated_at": time.time(),
+                }
+            submitted = ANALYSIS_SCHEDULER.submit(
+                job_id, url, player_id, username, password, player_name, fetch_method, model_name,
+            )
         if not submitted:
             with JOBS_LOCK:
                 JOBS.pop(job_id, None)
@@ -1456,14 +1609,24 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     args = parser.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"open http://{args.host}:{args.port}/paipu-analyzer.html", flush=True)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("server stopped", flush=True)
-    finally:
-        server.server_close()
+    from app_updater import UpdateManager
+    from update_worker import install_lock
+    # One running instance per installation, even if a different port is supplied.
+    # Otherwise a second process could analyze while the first replaces its files.
+    with install_lock(ROOT, name="server.lock"):
+        server = ThreadingHTTPServer((args.host, args.port), Handler)
+        server.app_updater = UpdateManager(ROOT, server.shutdown, args.host, args.port)
+        server.app_updater.start_periodic_checks(
+            check_immediately=not bool(os.environ.get("MORTAL_UPDATE_HEALTH_TOKEN")),
+        )
+        print(f"open http://{args.host}:{args.port}/paipu-analyzer.html", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("server stopped", flush=True)
+        finally:
+            server.app_updater.stop_periodic_checks()
+            server.server_close()
 
 
 if __name__ == "__main__":

@@ -64,6 +64,41 @@ http://127.0.0.1:8765/paipu-analyzer.html
 powershell -ExecutionPolicy Bypass -File .\start-paipu-server.ps1
 ```
 
+## 软件内更新（从 2.2.0 开始）
+
+启动后会在后台检查 GitHub 正式发行版，本地服务运行期间每小时自动检查一次，不需要先分析牌谱。分析页每 30 秒读取本机更新状态，发现新版会提示，也可随时点击“检查更新”（为避免频繁请求，同一分钟内会复用最近检查结果）。即使关闭分析页，只要本地服务仍在运行，定期检查也会继续；退出本地服务则停止，不会额外安装系统常驻服务。
+
+检测到带有效签名的新版后，空闲时直接点击“下载更新并重启”即可安装。后台检查与分析任务互不影响；只有安装时，若存在正在运行或排队的分析才需等待。断网或检查失败不影响正常分析，后台之后会再次检查；没有用户确认不会安装程序或重启服务。
+
+更新包只覆盖允许的程序文件，不覆盖 `tmp/paipu_jobs` 历史、`viewer-data`、`mj_model`、`paipu-service.local.json`，也不直接改写 Python runtime。新增第三方依赖可随更新包携带离线 wheels，安装到独立依赖目录；安装失败或新版启动失败会恢复原程序。安装中断后重新运行启动脚本会检查恢复日志。`.updates` 保存恢复备份和可能正在使用的依赖，不要直接删除整个目录。
+
+旧客户端不含更新器，首次需要升级到包含本功能的完整便携包。之后普通程序和依赖更新可以在软件内完成。更换 Python 版本/架构、Rust 原生扩展或基础运行环境时仍需完整便携包；版本不兼容会明确提示，不强行安装。带 `.git` 的开发目录不允许软件内覆盖更新，请继续通过 Git 管理代码。
+
+### 维护者发布流程
+
+源码提交不等于发布更新。先提交并测试准备发布的代码，再生成发行文件；发布工具默认拒绝未提交的源码，`--allow-dirty` 只用于本地测试。
+
+```powershell
+# 构建签名更新文件，不会上传 GitHub。版本应与准备发布的正式版本一致。
+.\runtime\Scripts\python.exe -B .\scripts\build-update.py build --version 2.2.0 --output .\dist\updates\2.2.0 --notes "首次加入软件内更新"
+# 构建供首次安装和旧用户升级使用的完整便携包。
+powershell -NoProfile -File .\scripts\package-portable.ps1 -OutputDirectory .\dist\portable\2.2.0
+```
+
+完整包构建会将基础运行环境复制到独立输出目录，再仅在副本中补齐发布依赖；不会更改开发者正在使用的运行环境。已存在的输出会被保留，需要另选输出目录；也不会打包用户自选模型，只携带默认 `mortal.pth`。可使用 `-RuntimeSource` 指定独立 Python 运行环境、`-ReviewerPath` 指定转换器。
+
+在 GitHub 创建对应的正式 Release（例如 `v2.2.0`），同时上传生成的 `mortal-update.json`、`mortal-update.sig`、`mortal-update-2.2.0.zip` 和完整便携包。客户端只接受本仓库、对应版本、有效期内的签名清单，并核对包及每个文件的 SHA-256。缺少签名的 Release 只提示手动下载，不能自动安装；清单有效期为 180 天，过期时应以新正式版本重新发布。
+
+若更新引入新依赖，先用对应 Windows/Python 环境下载完整的离线 wheel 依赖集合，再在构建命令中加 `--wheels <目录>`；客户端不从任意远程脚本或安装源执行更新。必须验证该依赖集合与现有运行环境兼容。需要删除废弃程序文件时可传 `--delete <项目相对路径>`，受相同的文件允许名单和恢复机制约束。
+
+`update-trust.json` 仅保存发布公钥。发布私钥不在项目中，默认由 Windows DPAPI 加密存放于 `%LOCALAPPDATA%\MortalAnalyzer\Publisher\update-signing-key.dpapi`。不要上传私钥，也不要重新生成公钥来替换已发给用户的公钥；否则旧客户端将不再信任新签名。DPAPI 文件与 Windows 用户环境绑定，仅复制该文件不等于跨机器可恢复备份。可用以下命令交互式导出加密备份，口令不要放在命令行或代码中：
+
+```powershell
+.\runtime\Scripts\python.exe -B .\scripts\build-update.py export-key --output E:\安全备份\mortal-update.private.pem
+```
+
+更新检查只读取公开发行信息，不上传雀魂账号密码或牌谱。发布工具不会自动创建 Release、推送 GitHub 或部署网站。
+
 ## 模型文件
 
 Mortal 模型统一放在：
