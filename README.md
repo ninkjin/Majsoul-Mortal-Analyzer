@@ -64,7 +64,7 @@ http://127.0.0.1:8765/paipu-analyzer.html
 powershell -ExecutionPolicy Bypass -File .\start-paipu-server.ps1
 ```
 
-## 软件内更新（从 2.2.0 开始）
+## 软件内更新（从 2.2.1 正式发行版开始）
 
 启动后会在后台检查 GitHub 正式发行版，本地服务运行期间每小时自动检查一次，不需要先分析牌谱。分析页每 30 秒读取本机更新状态，发现新版会提示，也可随时点击“检查更新”（为避免频繁请求，同一分钟内会复用最近检查结果）。即使关闭分析页，只要本地服务仍在运行，定期检查也会继续；退出本地服务则停止，不会额外安装系统常驻服务。
 
@@ -80,14 +80,14 @@ powershell -ExecutionPolicy Bypass -File .\start-paipu-server.ps1
 
 ```powershell
 # 构建签名更新文件，不会上传 GitHub。版本应与准备发布的正式版本一致。
-.\runtime\Scripts\python.exe -B .\scripts\build-update.py build --version 2.2.0 --output .\dist\updates\2.2.0 --notes "首次加入软件内更新"
+.\runtime\Scripts\python.exe -B .\scripts\build-update.py build --version 2.2.1 --output .\dist\updates\2.2.1 --notes "首次加入软件内更新"
 # 构建供首次安装和旧用户升级使用的完整便携包。
-powershell -NoProfile -File .\scripts\package-portable.ps1 -OutputDirectory .\dist\portable\2.2.0
+powershell -NoProfile -File .\scripts\package-portable.ps1 -OutputDirectory .\dist\portable\2.2.1
 ```
 
 完整包构建会将基础运行环境复制到独立输出目录，再仅在副本中补齐发布依赖；不会更改开发者正在使用的运行环境。已存在的输出会被保留，需要另选输出目录；也不会打包用户自选模型，只携带默认 `mortal.pth`。可使用 `-RuntimeSource` 指定独立 Python 运行环境、`-ReviewerPath` 指定转换器。
 
-在 GitHub 创建对应的正式 Release（例如 `v2.2.0`），同时上传生成的 `mortal-update.json`、`mortal-update.sig`、`mortal-update-2.2.0.zip` 和完整便携包。客户端只接受本仓库、对应版本、有效期内的签名清单，并核对包及每个文件的 SHA-256。缺少签名的 Release 只提示手动下载，不能自动安装；清单有效期为 180 天，过期时应以新正式版本重新发布。
+在 GitHub 创建对应的正式 Release（例如 `v2.2.1`），同时上传生成的 `mortal-update.json`、`mortal-update.sig`、`mortal-update-2.2.1.zip` 和完整便携包。客户端只接受本仓库、对应版本、有效期内的签名清单，并核对包及每个文件的 SHA-256。缺少签名的 Release 只提示手动下载，不能自动安装；清单有效期为 180 天，过期时应以新正式版本重新发布。
 
 若更新引入新依赖，先用对应 Windows/Python 环境下载完整的离线 wheel 依赖集合，再在构建命令中加 `--wheels <目录>`；客户端不从任意远程脚本或安装源执行更新。必须验证该依赖集合与现有运行环境兼容。需要删除废弃程序文件时可传 `--delete <项目相对路径>`，受相同的文件允许名单和恢复机制约束。
 

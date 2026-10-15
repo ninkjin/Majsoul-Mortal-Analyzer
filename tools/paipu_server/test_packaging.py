@@ -64,6 +64,7 @@ class PortablePackagingTest(unittest.TestCase):
         self.assertIn("$stagedPython -E -B -m pip install", script)
         self.assertNotIn("$python -m pip install", script)
         self.assertIn("pyvenv.cfg", script)
+        self.assertIn('Join-Path $stagedRuntime "etc\\aau_token"', script)
         self.assertIn('Join-Path $stage "mj_model\\mortal.pth"', script)
 
 

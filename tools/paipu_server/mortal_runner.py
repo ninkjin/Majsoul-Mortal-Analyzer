@@ -50,15 +50,16 @@ def python_has_mortal_deps(python):
     )
     try:
         result = subprocess.run(
-            [str(python), "-c", code],
+            [str(python), "-X", "utf8", "-c", code],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             timeout=12,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return False
-    available = result.returncode == 0
+    available = result.returncode == 0 and isinstance(result.stdout, str) and bool(result.stdout.strip())
     if available:
         site_packages = result.stdout.strip()
         with _RUNTIME_CACHE_LOCK:
@@ -77,15 +78,16 @@ def python_site_packages(python):
     code = "import sysconfig; print(sysconfig.get_path('purelib'))"
     try:
         result = subprocess.run(
-            [str(python), "-c", code],
+            [str(python), "-X", "utf8", "-c", code],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             timeout=12,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return None
-    if result.returncode != 0:
+    if result.returncode != 0 or not isinstance(result.stdout, str):
         return None
     path = result.stdout.strip()
     if path:
@@ -156,7 +158,7 @@ def docker_command(root, player_id, model_path=None):
 
 
 def local_command(root, python, player_id):
-    return [str(python), str(Path(root) / "tools" / "map_mortal_output.py"), str(player_id)]
+    return [str(python), "-X", "utf8", "-B", str(Path(root) / "tools" / "map_mortal_output.py"), str(player_id)]
 
 
 def run_mortal_mapping(root, mjai_path, mapped_path, player_id, model_path=None):

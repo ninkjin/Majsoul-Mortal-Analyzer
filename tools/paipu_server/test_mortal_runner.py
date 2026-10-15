@@ -121,6 +121,25 @@ class MortalRunnerTest(unittest.TestCase):
 
         self.assertEqual(run.call_count, 2)
 
+    def test_runtime_probes_use_utf8_for_chinese_installation_paths(self):
+        python = Path("D:/中文 路径/runtime/python.exe")
+        result = Mock(returncode=0, stdout="D:/中文 路径/runtime/Lib/site-packages\n", stderr="")
+        with patch.object(mortal_runner.subprocess, "run", return_value=result) as run:
+            self.assertTrue(mortal_runner.python_has_mortal_deps(python))
+            self.assertEqual(run.call_args.args[0][1:3], ["-X", "utf8"])
+            self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+            mortal_runner.clear_runtime_probe_cache()
+            self.assertEqual(mortal_runner.python_site_packages(python), result.stdout.strip())
+            self.assertEqual(run.call_args.args[0][1:3], ["-X", "utf8"])
+            self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(mortal_runner.local_command(python.parent.parent, python, 0)[1:4], ["-X", "utf8", "-B"])
+
+    def test_incomplete_probe_output_is_not_accepted_as_a_runtime(self):
+        result = Mock(returncode=0, stdout=None, stderr="")
+        with patch.object(mortal_runner.subprocess, "run", return_value=result):
+            self.assertFalse(mortal_runner.python_has_mortal_deps(Path("missing-python.exe")))
+            self.assertIsNone(mortal_runner.python_site_packages(Path("missing-python.exe")))
+
     def test_failed_mapping_preserves_previous_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -73,6 +73,7 @@ function Remove-StagedBuildTool([string]$candidate) {
 
 Remove-StagedBuildTool (Join-Path $stagedRuntime "Scripts\maturin.exe")
 Remove-StagedBuildTool (Join-Path $stagedRuntime "conda-meta")
+Remove-StagedBuildTool (Join-Path $stagedRuntime "etc\aau_token")
 $stagedSitePackages = Join-Path $stagedRuntime "Lib\site-packages"
 Remove-StagedBuildTool (Join-Path $stagedSitePackages "maturin")
 Get-ChildItem -LiteralPath $stagedSitePackages -Directory -Filter "maturin-*.dist-info" -ErrorAction SilentlyContinue |
